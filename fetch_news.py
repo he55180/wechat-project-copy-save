@@ -106,18 +106,16 @@ class RSSFetcher:
         return response
     
     def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章 - 只抓今日头条博主技术文章"""
+        """抓取单个关键词的文章 - 今日头条 + Google News 备份"""
         encoded_kw = urllib.parse.quote(keyword)
+        articles = []
         
-        # RSSHub 镜像列表
+        # 1. 优先尝试今日头条（博主文章）
         rsshub_mirrors = [
             "https://rsshub.rssforever.com",
             "https://rsshub.app",
-            "https://rsshub.feeded.xyz",
-            "https://hub.slarker.me",
         ]
         
-        # 只抓取今日头条搜索结果（博主文章）
         for mirror in rsshub_mirrors:
             toutiao_url = f"{mirror}/toutiao/search/{encoded_kw}"
             try:
@@ -132,6 +130,20 @@ class RSSFetcher:
             except Exception as e:
                 logger.debug(f"[今日头条] {mirror} 失败: {e}")
                 continue
+        
+        # 2. 今日头条失败时，用 Google News 备份
+        google_url = f"https://news.google.com/rss/search?q={encoded_kw}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+        try:
+            logger.info(f"📡 [Google备份] 搜索: {keyword}")
+            response = self._fetch_with_retry(google_url)
+            feed = feedparser.parse(response.text)
+            if feed.entries:
+                articles = self._parse_feed_entries(feed.entries, keyword, 'Google')
+                if articles:
+                    logger.info(f"✓ [Google备份] 获取 {len(articles)} 条: {keyword}")
+                    return articles[:self.config.max_items_per_keyword]
+        except Exception as e:
+            logger.debug(f"[Google备份] 失败: {e}")
         
         logger.warning(f"✗ 未获取到数据: {keyword}")
         return []
@@ -223,58 +235,83 @@ class RSSFetcher:
 # ============================================================================
 
 class GeminiFilter:
-    """今日头条博主技术文章筛选器"""
+    """HSE总监级专业筛选器"""
     
-    SYSTEM_PROMPT = """你是一位建筑工程 HSE 专家。
+    SYSTEM_PROMPT = """你现在的身份是国家注册安全工程师和资深 HSE 总监，拥有 20 年建筑工程安全管理经验。
 
-你的任务是从今日头条文章中筛选出最有价值的 20 篇博主/工程师写的技术文章。
+你的职责是从原始信息中筛选出对一线 HSE 管理人员最有价值的专业内容。
 
-重要：必须排除新闻类内容（事故报道、政策发布等），只保留技术类文章。"""
+你的专业背景：
+- 精通《安全生产法》《建设工程安全生产管理条例》等法规
+- 熟悉危大工程专项施工方案编制与论证流程
+- 擅长施工现场隐患识别与风险评估
+- 了解 ISO 45001、ISO 14001 管理体系要求"""
 
-    USER_PROMPT_TEMPLATE = """以下是从今日头条检索到的文章列表（共 {total} 篇）：
+    USER_PROMPT_TEMPLATE = """以下是从今日头条检索到的原始文章列表（共 {total} 篇）：
 
 ---
 {articles_text}
 ---
 
-请筛选出 {top_n} 篇最有价值的技术文章。
+请以 HSE 总监的专业视角，执行以下任务：
 
-## 筛选标准
+## 一、严苛筛选
 
-### ✅ 优先保留（博主/工程师写的技术文章）：
-- 施工技术方案、施工工艺讲解
-- 安全技术交底、安全操作规程
-- 环保管理制度、绿色施工方法
-- 危大工程方案编制指南
-- 隐患排查清单、检查要点
-- 实操经验分享、案例分析
+❌ 必须剔除：
+- 社会八卦、娱乐新闻
+- 与安环管理无关的普通商业新闻
+- 纯事故报道（只报死伤人数，无分析价值）
+- 广告软文、产品推销
+- 标题党、无实质内容
 
-### ❌ 必须排除（新闻类内容）：
-- 事故报道（如"XX爆炸事故""XX人死亡"）
-- 政策发布、官方通报
-- 广告软文、产品推广
-- 纯转载无原创内容
+✅ 优先保留：
+- 博主/工程师写的技术文章
+- 有深度分析的事故案例
+- 可操作的管理制度、检查清单
+- 施工工艺、安全技术交底
 
-## 输出格式
+## 二、专业分类
 
-请按以下 Markdown 格式输出 {top_n} 条精选：
+将筛选后的文章分为以下类别：
+1. 【施工技术分享】- 施工工艺、技术方案
+2. 【安全环境管理】- 管理制度、检查要点
+3. 【事故案例分析】- 有分析价值的事故复盘
+4. 【危大工程】- 深基坑、高支模等专项
+5. 【起重吊装】- 塔吊、汽车吊等
+6. 【脚手架/模板支架】- 架体搭设、验收
+7. 【其他安全】- 其他有价值内容
 
-### 1. [文章标题](文章链接)
-- **类型**：施工技术/安全管理/环保管理
-- **简介**：一句话概括
+## 三、输出格式
 
-### 2. [下一篇标题](链接)
-...
+请输出 {top_n} 条精选，按专业价值排序，格式如下：
 
-## 重要提示
-- 必须输出 {top_n} 条（如果够多）
-- 严禁捏造标题或链接
-- 去重：相似内容只保留一篇"""
+---
 
-## 重要提示
-- 必须输出满 {top_n} 条（如果原文够多）
-- 严禁捏造文章标题或链接
-- 去重：相似内容只保留一篇"""
+### 【施工技术分享】
+
+#### 1. [文章标题](文章链接)
+- **核心要点**：该文章的主要技术内容
+- **管理建议**：作为 HSE 负责人，可借鉴的管理措施
+
+---
+
+### 【安全环境管理】
+
+#### 2. [文章标题](文章链接)
+- **核心要点**：...
+- **管理建议**：...
+
+---
+
+（按类别继续输出...）
+
+## 四、重要提示
+
+1. 必须输出 {top_n} 条（如果原文够多）
+2. 严禁捏造标题或链接
+3. 每条必须包含"核心要点"和"管理建议"
+4. 相似内容只保留质量最高的一篇
+5. 按专业价值排序，最有价值的排在前面"""
 
     def __init__(self, api_key: str = None, model: str = "gemini-2.0-flash"):
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
