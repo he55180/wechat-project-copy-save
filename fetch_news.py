@@ -48,11 +48,13 @@ class Config:
         "HSE管理"
     ])
     
-    # RSSHub配置
-    rsshub_base: str = "https://rsshub.app"
+    # RSSHub配置 - 使用更稳定的自建实例和官方实例
+    rsshub_base: str = "https://rsshub.pseudoyu.com"
     rsshub_mirrors: List[str] = field(default_factory=lambda: [
-        "https://rsshub.rssforever.com",
-        "https://rsshub.feeded.xyz",
+        "https://rsshub.ktachibana.party",
+        "https://rsshub-instance.zeabur.app",
+        "https://rsshub.atgw.io",
+        "https://rsshub.app",
     ])
     
     # 抓取配置
@@ -88,10 +90,12 @@ class RSSFetcher:
         self.config = config
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         })
-        # 时效性阈值：只保留24小时内的文章
-        self.freshness_threshold = timedelta(hours=24)
+        # 时效性阈值：放宽到72小时以确保有足够数据
+        self.freshness_threshold = timedelta(hours=72)
     
     @retry(
         stop=stop_after_attempt(3),
@@ -108,43 +112,56 @@ class RSSFetcher:
         return response
     
     def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章"""
+        """抓取单个关键词的文章 - 支持多数据源"""
         encoded_kw = urllib.parse.quote(keyword)
         articles = []
         
-        # 尝试主域名和镜像
-        urls_to_try = [
-            f"{self.config.rsshub_base}/toutiao/search/{encoded_kw}"
-        ] + [
-            f"{mirror}/toutiao/search/{encoded_kw}" 
-            for mirror in self.config.rsshub_mirrors
+        # 多数据源策略：今日头条 -> 百度资讯 -> 搜狗新闻
+        data_sources = [
+            # 今日头条搜索
+            ('今日头条', f"/toutiao/search/{encoded_kw}"),
+            # 百度资讯（更稳定）
+            ('百度资讯', f"/baidu/news/{encoded_kw}"),
+            # 搜狗新闻
+            ('搜狗新闻', f"/sogou/search/{encoded_kw}"),
+            # 微信搜索（关键词）
+            ('微信搜索', f"/wechat/wechat/{encoded_kw}?key={encoded_kw}"),
         ]
         
-        for url in urls_to_try:
-            try:
-                logger.info(f"📡 尝试: {url[:60]}...")
-                response = self._fetch_with_retry(url)
-                
-                # 使用feedparser解析RSS
-                feed = feedparser.parse(response.text)
-                
-                if feed.entries:
-                    articles = self._parse_feed_entries(feed.entries, keyword)
-                    if articles:
-                        logger.info(f"✓ 获取 {len(articles)} 条: {keyword}")
-                        return articles[:self.config.max_items_per_keyword]
-                        
-            except requests.RequestException as e:
-                logger.warning(f"⚠ 所有重试均失败: {e}")
-                continue
-            except Exception as e:
-                logger.warning(f"⚠ 解析错误: {e}")
-                continue
+        for source_name, route in data_sources:
+            # 对每个数据源，尝试主域名和镜像
+            urls_to_try = [
+                f"{self.config.rsshub_base}{route}"
+            ] + [
+                f"{mirror}{route}" 
+                for mirror in self.config.rsshub_mirrors
+            ]
+            
+            for url in urls_to_try:
+                try:
+                    logger.info(f"📡 [{source_name}] 尝试: {url[:70]}...")
+                    response = self._fetch_with_retry(url)
+                    
+                    # 使用feedparser解析RSS
+                    feed = feedparser.parse(response.text)
+                    
+                    if feed.entries:
+                        articles = self._parse_feed_entries(feed.entries, keyword, source_name)
+                        if articles:
+                            logger.info(f"✓ [{source_name}] 获取 {len(articles)} 条: {keyword}")
+                            return articles[:self.config.max_items_per_keyword]
+                            
+                except requests.RequestException as e:
+                    logger.debug(f"⚠ [{source_name}] 请求失败: {e}")
+                    continue
+                except Exception as e:
+                    logger.debug(f"⚠ [{source_name}] 解析错误: {e}")
+                    continue
         
-        logger.warning(f"✗ 未能获取: {keyword}")
+        logger.warning(f"✗ 所有数据源均未能获取: {keyword}")
         return []
     
-    def _parse_feed_entries(self, entries: list, keyword: str) -> List[Dict[str, Any]]:
+    def _parse_feed_entries(self, entries: list, keyword: str, source: str = '今日头条') -> List[Dict[str, Any]]:
         """解析RSS条目并进行时效性过滤"""
         now = datetime.now(timezone.utc)
         items = []
@@ -198,7 +215,7 @@ class RSSFetcher:
                 'pub_datetime': pub_date,
                 'freshness': freshness,
                 'keyword': keyword,
-                'source': '今日头条'
+                'source': source
             })
         
         # 按发布时间排序（最新在前）
