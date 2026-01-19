@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 
 import requests
 import feedparser
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dateutil import parser as date_parser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -274,8 +275,8 @@ class GeminiFilter:
         if not self.api_key:
             raise ValueError("未设置 GEMINI_API_KEY 环境变量")
         
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(model)
+        self.client = genai.Client(api_key=self.api_key)
+        self.model_name = model
         logger.info(f"✓ Gemini模型已初始化: {model}")
     
     def filter_articles(self, articles: List[Dict[str, Any]], top_n: int = 20) -> str:
@@ -295,11 +296,12 @@ class GeminiFilter:
 
         try:
             logger.info(f"🤖 正在调用Gemini进行智能筛选...")
-            response = self.model.generate_content(
-                [self.SYSTEM_PROMPT, user_prompt],
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.2,  # 降低温度，提高一致性
-                    max_output_tokens=8192  # 增加输出长度以容纳详细分析
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=[self.SYSTEM_PROMPT + "\n\n" + user_prompt],
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=8192
                 )
             )
             
