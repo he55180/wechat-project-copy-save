@@ -62,8 +62,8 @@ class Config:
     request_timeout: int = 15
     request_delay: float = 2.0
     
-    # Gemini配置
-    gemini_model: str = "gemini-2.5-pro-preview-05-06"
+    # Gemini配置 - 使用最新稳定版本
+    gemini_model: str = "gemini-2.0-flash"
     top_n: int = 20
     
     # 输出配置
@@ -306,7 +306,7 @@ class GeminiFilter:
 - 严禁捏造文章标题或链接
 - 相似内容只保留质量最高的一篇"""
 
-    def __init__(self, api_key: str = None, model: str = "gemini-2.5-pro-preview-05-06"):
+    def __init__(self, api_key: str = None, model: str = "gemini-2.0-flash"):
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
         if not self.api_key:
             raise ValueError("未设置 GEMINI_API_KEY 环境变量")
