@@ -38,29 +38,23 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 @dataclass
 class Config:
     """系统配置"""
-    # 搜索关键词
+    # 搜索关键词（精简为核心词，提升效率）
     keywords: List[str] = field(default_factory=lambda: [
-        "施工管理",
-        "安全管理", 
-        "环境保护管理",
-        "安全生产",
-        "工程事故分析",
-        "HSE管理"
+        "安全生产事故",
+        "施工安全管理", 
+        "建筑工程事故"
     ])
     
-    # RSSHub配置 - 使用更稳定的自建实例和官方实例
-    rsshub_base: str = "https://rsshub.pseudoyu.com"
+    # RSSHub配置 - 精简镜像提升速度
+    rsshub_base: str = "https://rsshub.app"
     rsshub_mirrors: List[str] = field(default_factory=lambda: [
-        "https://rsshub.ktachibana.party",
-        "https://rsshub-instance.zeabur.app",
-        "https://rsshub.atgw.io",
-        "https://rsshub.app",
+        "https://rsshub.pseudoyu.com",
     ])
     
-    # 抓取配置
-    max_items_per_keyword: int = 15
-    request_timeout: int = 15
-    request_delay: float = 2.0
+    # 抓取配置（优化超时）
+    max_items_per_keyword: int = 10
+    request_timeout: int = 8
+    request_delay: float = 0.5
     
     # Gemini配置 - 使用最新稳定版本
     gemini_model: str = "gemini-2.0-flash"
@@ -117,15 +111,9 @@ class RSSFetcher:
         articles = []
         
         # 多数据源策略：今日头条 -> 百度资讯 -> 搜狗新闻
+        # 只用百度资讯（最稳定，速度快）
         data_sources = [
-            # 今日头条搜索
-            ('今日头条', f"/toutiao/search/{encoded_kw}"),
-            # 百度资讯（更稳定）
             ('百度资讯', f"/baidu/news/{encoded_kw}"),
-            # 搜狗新闻
-            ('搜狗新闻', f"/sogou/search/{encoded_kw}"),
-            # 微信搜索（关键词）
-            ('微信搜索', f"/wechat/wechat/{encoded_kw}?key={encoded_kw}"),
         ]
         
         for source_name, route in data_sources:
