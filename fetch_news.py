@@ -39,22 +39,23 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 @dataclass
 class Config:
     """系统配置"""
-    # 搜索关键词（包含海外工程安全相关）
+    # 搜索关键词（扩展更多关键词获取更多新闻）
     keywords: List[str] = field(default_factory=lambda: [
-        "安全生产事故",
-        "施工安全管理", 
-        "海外工程安全",
-        "建筑工程事故",
-        "HSE管理"
+        "安全生产",
+        "施工安全", 
+        "建筑事故",
+        "工程安全",
+        "环境保护",
+        "海外工程"
     ])
     
     # 抓取配置
-    max_items_per_keyword: int = 10
+    max_items_per_keyword: int = 15
     request_timeout: int = 10
-    request_delay: float = 0.5
+    request_delay: float = 0.3
     
     # Gemini配置 - 使用最新稳定版本
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-2.0-flash-001"
     top_n: int = 20
     
     # 输出配置
@@ -103,27 +104,51 @@ class RSSFetcher:
         return response
     
     def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章 - 使用 Google News RSS"""
+        """抓取单个关键词的文章 - 多数据源策略"""
         encoded_kw = urllib.parse.quote(keyword)
+        all_articles = []
         
-        # 使用 Google News RSS（在 GitHub Actions 服务器上稳定可用）
+        # 数据源列表：今日头条(博主) + Google News(官方)
+        rsshub_mirrors = [
+            "https://rsshub.rssforever.com",
+            "https://rsshub.app",
+        ]
+        
+        # 1. 先抓今日头条（博主内容）
+        for mirror in rsshub_mirrors:
+            toutiao_url = f"{mirror}/toutiao/search/{encoded_kw}"
+            try:
+                logger.info(f"📡 [今日头条] 尝试: {mirror}")
+                response = self._fetch_with_retry(toutiao_url)
+                feed = feedparser.parse(response.text)
+                if feed.entries:
+                    articles = self._parse_feed_entries(feed.entries, keyword, '今日头条')
+                    if articles:
+                        logger.info(f"✓ [今日头条] 获取 {len(articles)} 条")
+                        all_articles.extend(articles)
+                        break
+            except Exception as e:
+                logger.debug(f"[今日头条] {mirror} 失败: {e}")
+                continue
+        
+        # 2. 再抓 Google News（官方新闻）
         google_news_url = f"https://news.google.com/rss/search?q={encoded_kw}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-        
         try:
-            logger.info(f"📡 [Google News] 正在搜索: {keyword}")
+            logger.info(f"📡 [官方新闻] 正在搜索: {keyword}")
             response = self._fetch_with_retry(google_news_url)
             feed = feedparser.parse(response.text)
-            
             if feed.entries:
-                articles = self._parse_feed_entries(feed.entries, keyword, 'Google News')
+                articles = self._parse_feed_entries(feed.entries, keyword, '官方新闻')
                 if articles:
-                    logger.info(f"✓ [Google News] 获取 {len(articles)} 条: {keyword}")
-                    return articles[:self.config.max_items_per_keyword]
+                    logger.info(f"✓ [官方新闻] 获取 {len(articles)} 条")
+                    all_articles.extend(articles)
         except Exception as e:
-            logger.warning(f"⚠ [Google News] 失败: {e}")
+            logger.warning(f"⚠ [官方新闻] 失败: {e}")
         
-        logger.warning(f"✗ 未获取到数据: {keyword}")
-        return []
+        if not all_articles:
+            logger.warning(f"✗ 未获取到数据: {keyword}")
+        
+        return all_articles[:self.config.max_items_per_keyword]
     
     def _parse_feed_entries(self, entries: list, keyword: str, source: str = '今日头条') -> List[Dict[str, Any]]:
         """解析RSS条目并进行时效性过滤"""
@@ -253,22 +278,25 @@ class GeminiFilter:
 - 🔥 置顶：涉及近期重大事故预警或国家级政策更新
 - 🔥 置顶：住建部/应急管理部等官方通报
 
+## 输出排序规则
+1. **今日头条博主内容**排在前面（行业观点、实操经验）
+2. **官方新闻**排在后面（政策法规、事故通报）
+
 ## 输出格式要求
 
-请严格按以下Markdown格式输出Top {top_n} 精选：
+请严格输出 {top_n} 条精选，按以下Markdown格式：
 
 ### 1. [文章标题](文章链接)
-- **📌 核心看点**：用一句话概括文章对HSE管理员的实际指导意义
-- **💡 推荐理由**：简述该文为何值得阅读（如：法规更新、新技术应用、典型事故教训）
-- **🏷️ 标签**：#安全管理 #绿色施工 #合规性 #危大工程 （根据内容选择2-3个）
+- **📌 核心看点**：一句话概括
+- **🏷️ 来源**：今日头条/官方新闻
 
 ### 2. [下一篇标题](链接)
 ...
 
 ## 重要提示
-- 如果高质量文章不足{top_n}篇，请如实列出实际筛选数量，宁缺毋滥
+- 必须输出满 {top_n} 条（如果原文够多）
 - 严禁捏造文章标题或链接
-- 相似内容只保留质量最高的一篇"""
+- 去重：相似内容只保留一篇"""
 
     def __init__(self, api_key: str = None, model: str = "gemini-2.0-flash"):
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
