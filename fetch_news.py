@@ -90,8 +90,8 @@ class RSSFetcher:
             'Accept': 'application/rss+xml, application/xml, text/xml, */*',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         })
-        # 时效性阈值：放宽到72小时以确保有足够数据
-        self.freshness_threshold = timedelta(hours=72)
+        # 时效性阈值：放宽到7天以确保有足够数据
+        self.freshness_threshold = timedelta(days=7)
     
     @retry(
         stop=stop_after_attempt(3),
@@ -108,25 +108,35 @@ class RSSFetcher:
         return response
     
     def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章 - 使用 Google News RSS"""
+        """抓取单个关键词的文章 - 多数据源并行获取"""
         encoded_kw = urllib.parse.quote(keyword)
+        all_articles = []
         
-        # 使用 Google News RSS 搜索
-        google_url = f"https://news.google.com/rss/search?q={encoded_kw}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-        try:
-            logger.info(f"📡 [Google News] 搜索: {keyword}")
-            response = self._fetch_with_retry(google_url)
-            feed = feedparser.parse(response.text)
-            if feed.entries:
-                articles = self._parse_feed_entries(feed.entries, keyword, 'Google')
-                if articles:
-                    logger.info(f"✓ [Google News] 获取 {len(articles)} 条: {keyword}")
-                    return articles[:self.config.max_items_per_keyword]
-        except Exception as e:
-            logger.warning(f"⚠ [Google News] 失败: {e}")
+        # 数据源列表
+        sources = [
+            # Google News
+            (f"https://news.google.com/rss/search?q={encoded_kw}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans", 'Google'),
+            # Bing News RSS
+            (f"https://www.bing.com/news/search?q={encoded_kw}&format=rss&mkt=zh-CN", 'Bing'),
+        ]
         
-        logger.warning(f"✗ 未获取到数据: {keyword}")
-        return []
+        for url, source_name in sources:
+            try:
+                logger.info(f"📡 [{source_name}] 搜索: {keyword}")
+                response = self._fetch_with_retry(url)
+                feed = feedparser.parse(response.text)
+                if feed.entries:
+                    articles = self._parse_feed_entries(feed.entries, keyword, source_name)
+                    if articles:
+                        logger.info(f"✓ [{source_name}] 获取 {len(articles)} 条: {keyword}")
+                        all_articles.extend(articles)
+            except Exception as e:
+                logger.debug(f"⚠ [{source_name}] 失败: {e}")
+        
+        if not all_articles:
+            logger.warning(f"✗ 未获取到数据: {keyword}")
+        
+        return all_articles[:self.config.max_items_per_keyword]
     
     def _parse_feed_entries(self, entries: list, keyword: str, source: str = '今日头条') -> List[Dict[str, Any]]:
         """解析RSS条目并进行时效性过滤"""
@@ -170,10 +180,7 @@ class RSSFetcher:
                 except (ValueError, TypeError):
                     pub_date_str = "未知时间"
             
-            # 时效性过滤：只保留24小时内的文章
-            if not is_fresh:
-                continue
-            
+            # 不做时效性过滤，保留所有文章（让AI筛选质量）
             items.append({
                 'title': title,
                 'link': link,
@@ -191,8 +198,10 @@ class RSSFetcher:
         return items
     
     def fetch_all(self) -> List[Dict[str, Any]]:
-        """抓取所有关键词"""
+        """抓取所有关键词并去重"""
         all_articles = []
+        seen_titles = set()
+        seen_links = set()
         
         for i, keyword in enumerate(self.config.keywords, 1):
             logger.info(f"\n{'='*50}")
@@ -200,13 +209,25 @@ class RSSFetcher:
             logger.info('='*50)
             
             articles = self.fetch_keyword(keyword)
-            all_articles.extend(articles)
+            
+            # 去重：基于标题和链接
+            for article in articles:
+                title = article.get('title', '')
+                link = article.get('link', '')
+                
+                # 标题相似度去重（取前20个字符）
+                title_key = title[:20] if title else ''
+                
+                if title_key not in seen_titles and link not in seen_links:
+                    seen_titles.add(title_key)
+                    seen_links.add(link)
+                    all_articles.append(article)
             
             # 礼貌延迟
             if i < len(self.config.keywords):
                 time.sleep(self.config.request_delay)
         
-        logger.info(f"\n📊 总计抓取: {len(all_articles)} 篇文章")
+        logger.info(f"\n📊 总计抓取: {len(all_articles)} 篇去重后文章")
         return all_articles
 
 
