@@ -66,16 +66,30 @@ jobs:
           
           python fetch_news.py $EXTRA_ARGS
 
-      # 5. 读取生成的报告
-      - name: 📄 Read Report Content
+      # 5. 读取并转换报告（Markdown → HTML）
+      - name: 📄 Read & Convert Report
         id: report
         run: |
-          # 读取报告内容
+          # 安装 markdown 转换工具
+          pip install markdown
+          
           if [ -f "output/latest_report.md" ]; then
             echo "report_exists=true" >> $GITHUB_OUTPUT
-            # 使用delimiter处理多行内容
+            
+            # 转换 Markdown 为 HTML
+            python -c "
+import markdown
+with open('output/latest_report.md', 'r', encoding='utf-8') as f:
+    md_content = f.read()
+html_content = markdown.markdown(md_content, extensions=['tables', 'fenced_code'])
+with open('output/report.html', 'w', encoding='utf-8') as f:
+    f.write(html_content)
+print('✓ Markdown 已转换为 HTML')
+"
+            
+            # 读取 HTML 内容
             echo "report_content<<EOF" >> $GITHUB_OUTPUT
-            cat output/latest_report.md >> $GITHUB_OUTPUT
+            cat output/report.html >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "report_exists=false" >> $GITHUB_OUTPUT
