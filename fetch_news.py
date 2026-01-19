@@ -39,22 +39,24 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 @dataclass
 class Config:
     """系统配置"""
-    # 搜索关键词（技术文章类，不是新闻类）
+    # 搜索关键词（用更通用的词获取更多结果）
     keywords: List[str] = field(default_factory=lambda: [
-        "施工技术方案",
-        "安全技术交底",
-        "环保管理制度",
-        "危大工程方案",
-        "深基坑施工",
-        "高处作业安全",
-        "起重安全管理",
-        "安全隐患排查"
+        "施工安全",
+        "建筑工程 安全",
+        "危大工程",
+        "高处作业",
+        "起重安全",
+        "脚手架 施工",
+        "深基坑 施工",
+        "安全生产 建筑",
+        "环保施工",
+        "安全隐患"
     ])
     
     # 抓取配置
-    max_items_per_keyword: int = 10
-    request_timeout: int = 15
-    request_delay: float = 0.5
+    max_items_per_keyword: int = 20
+    request_timeout: int = 20
+    request_delay: float = 0.2
     
     # Gemini配置
     gemini_model: str = "gemini-2.0-flash"
@@ -106,44 +108,22 @@ class RSSFetcher:
         return response
     
     def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章 - 今日头条 + Google News 备份"""
+        """抓取单个关键词的文章 - 使用 Google News RSS"""
         encoded_kw = urllib.parse.quote(keyword)
-        articles = []
         
-        # 1. 优先尝试今日头条（博主文章）
-        rsshub_mirrors = [
-            "https://rsshub.rssforever.com",
-            "https://rsshub.app",
-        ]
-        
-        for mirror in rsshub_mirrors:
-            toutiao_url = f"{mirror}/toutiao/search/{encoded_kw}"
-            try:
-                logger.info(f"📡 [今日头条] 尝试: {mirror}")
-                response = self._fetch_with_retry(toutiao_url)
-                feed = feedparser.parse(response.text)
-                if feed.entries:
-                    articles = self._parse_feed_entries(feed.entries, keyword, '今日头条')
-                    if articles:
-                        logger.info(f"✓ [今日头条] 获取 {len(articles)} 条: {keyword}")
-                        return articles[:self.config.max_items_per_keyword]
-            except Exception as e:
-                logger.debug(f"[今日头条] {mirror} 失败: {e}")
-                continue
-        
-        # 2. 今日头条失败时，用 Google News 备份
+        # 使用 Google News RSS 搜索
         google_url = f"https://news.google.com/rss/search?q={encoded_kw}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
         try:
-            logger.info(f"📡 [Google备份] 搜索: {keyword}")
+            logger.info(f"📡 [Google News] 搜索: {keyword}")
             response = self._fetch_with_retry(google_url)
             feed = feedparser.parse(response.text)
             if feed.entries:
                 articles = self._parse_feed_entries(feed.entries, keyword, 'Google')
                 if articles:
-                    logger.info(f"✓ [Google备份] 获取 {len(articles)} 条: {keyword}")
+                    logger.info(f"✓ [Google News] 获取 {len(articles)} 条: {keyword}")
                     return articles[:self.config.max_items_per_keyword]
         except Exception as e:
-            logger.debug(f"[Google备份] 失败: {e}")
+            logger.warning(f"⚠ [Google News] 失败: {e}")
         
         logger.warning(f"✗ 未获取到数据: {keyword}")
         return []
