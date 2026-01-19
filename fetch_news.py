@@ -41,15 +41,12 @@ class Config:
     # 搜索关键词（精简为核心词，提升效率）
     keywords: List[str] = field(default_factory=lambda: [
         "安全生产事故",
-        "施工安全管理", 
+        "施工安全", 
         "建筑工程事故"
     ])
     
-    # RSSHub配置 - 精简镜像提升速度
-    rsshub_base: str = "https://rsshub.app"
-    rsshub_mirrors: List[str] = field(default_factory=lambda: [
-        "https://rsshub.pseudoyu.com",
-    ])
+    # 使用 Bing 新闻 RSS（更稳定，不依赖 RSSHub）
+    use_bing_news: bool = True
     
     # 抓取配置（优化超时）
     max_items_per_keyword: int = 10
@@ -106,47 +103,26 @@ class RSSFetcher:
         return response
     
     def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章 - 支持多数据源"""
+        """抓取单个关键词的文章 - 使用 Google News RSS"""
         encoded_kw = urllib.parse.quote(keyword)
-        articles = []
         
-        # 多数据源策略：今日头条 -> 百度资讯 -> 搜狗新闻
-        # 只用百度资讯（最稳定，速度快）
-        data_sources = [
-            ('百度资讯', f"/baidu/news/{encoded_kw}"),
-        ]
+        # 使用 Google News RSS（在 GitHub Actions 服务器上稳定可用）
+        google_news_url = f"https://news.google.com/rss/search?q={encoded_kw}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
         
-        for source_name, route in data_sources:
-            # 对每个数据源，尝试主域名和镜像
-            urls_to_try = [
-                f"{self.config.rsshub_base}{route}"
-            ] + [
-                f"{mirror}{route}" 
-                for mirror in self.config.rsshub_mirrors
-            ]
+        try:
+            logger.info(f"📡 [Google News] 正在搜索: {keyword}")
+            response = self._fetch_with_retry(google_news_url)
+            feed = feedparser.parse(response.text)
             
-            for url in urls_to_try:
-                try:
-                    logger.info(f"📡 [{source_name}] 尝试: {url[:70]}...")
-                    response = self._fetch_with_retry(url)
-                    
-                    # 使用feedparser解析RSS
-                    feed = feedparser.parse(response.text)
-                    
-                    if feed.entries:
-                        articles = self._parse_feed_entries(feed.entries, keyword, source_name)
-                        if articles:
-                            logger.info(f"✓ [{source_name}] 获取 {len(articles)} 条: {keyword}")
-                            return articles[:self.config.max_items_per_keyword]
-                            
-                except requests.RequestException as e:
-                    logger.debug(f"⚠ [{source_name}] 请求失败: {e}")
-                    continue
-                except Exception as e:
-                    logger.debug(f"⚠ [{source_name}] 解析错误: {e}")
-                    continue
+            if feed.entries:
+                articles = self._parse_feed_entries(feed.entries, keyword, 'Google News')
+                if articles:
+                    logger.info(f"✓ [Google News] 获取 {len(articles)} 条: {keyword}")
+                    return articles[:self.config.max_items_per_keyword]
+        except Exception as e:
+            logger.warning(f"⚠ [Google News] 失败: {e}")
         
-        logger.warning(f"✗ 所有数据源均未能获取: {keyword}")
+        logger.warning(f"✗ 未获取到数据: {keyword}")
         return []
     
     def _parse_feed_entries(self, entries: list, keyword: str, source: str = '今日头条') -> List[Dict[str, Any]]:
