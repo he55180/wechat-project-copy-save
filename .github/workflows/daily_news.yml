@@ -94,7 +94,6 @@ jobs:
           server_address: smtp.gmail.com
           server_port: 465
           secure: true
-          connection_timeout: 30
           
           # 认证信息（从 Secrets 读取）
           username: ${{ secrets.MAIL_USERNAME }}
@@ -169,7 +168,6 @@ jobs:
           server_address: smtp.gmail.com
           server_port: 465
           secure: true
-          connection_timeout: 30
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
           subject: "⚠️ [HSE系统] 自动化任务失败 - ${{ github.run_id }}"
