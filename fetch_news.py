@@ -108,15 +108,14 @@ class RSSFetcher:
         return response
     
     def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章 - 多数据源并行获取"""
+        """抓取单个关键词的文章 - 多数据源获取"""
         encoded_kw = urllib.parse.quote(keyword)
         all_articles = []
         
-        # RSSHub 镜像列表（知乎、微信需要）
+        # RSSHub 镜像列表（微信公众号需要）
         rsshub_mirrors = [
             "https://rsshub.rssforever.com",
             "https://rsshub.app",
-            "https://rss.shab.fun",
         ]
         
         # 数据源列表
@@ -141,28 +140,22 @@ class RSSFetcher:
             except Exception as e:
                 logger.debug(f"⚠ [{source_name}] 失败: {e}")
         
-        # RSSHub 数据源（知乎搜索、微信搜索）
-        rsshub_routes = [
-            (f"/zhihu/search/{encoded_kw}", '知乎'),
-            (f"/wechat/sogou/{encoded_kw}", '微信公众号'),
-        ]
-        
-        for route, source_name in rsshub_routes:
-            for mirror in rsshub_mirrors:
-                try:
-                    url = f"{mirror}{route}"
-                    logger.info(f"📡 [{source_name}] 尝试: {mirror}")
-                    response = self._fetch_with_retry(url)
-                    feed = feedparser.parse(response.text)
-                    if feed.entries:
-                        articles = self._parse_feed_entries(feed.entries, keyword, source_name)
-                        if articles:
-                            logger.info(f"✓ [{source_name}] 获取 {len(articles)} 条: {keyword}")
-                            all_articles.extend(articles)
-                            break  # 成功获取后跳过其他镜像
-                except Exception as e:
-                    logger.debug(f"⚠ [{source_name}] {mirror} 失败: {e}")
-                    continue
+        # RSSHub 数据源（仅微信公众号，知乎搜索路由已失效）
+        for mirror in rsshub_mirrors:
+            try:
+                url = f"{mirror}/wechat/sogou/{encoded_kw}"
+                logger.info(f"📡 [微信公众号] 尝试: {mirror}")
+                response = self._fetch_with_retry(url)
+                feed = feedparser.parse(response.text)
+                if feed.entries:
+                    articles = self._parse_feed_entries(feed.entries, keyword, '微信公众号')
+                    if articles:
+                        logger.info(f"✓ [微信公众号] 获取 {len(articles)} 条: {keyword}")
+                        all_articles.extend(articles)
+                        break  # 成功获取后跳过其他镜像
+            except Exception as e:
+                logger.debug(f"⚠ [微信公众号] {mirror} 失败: {e}")
+                continue
         
         if not all_articles:
             logger.warning(f"✗ 未获取到数据: {keyword}")
