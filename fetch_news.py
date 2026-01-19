@@ -39,23 +39,25 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 @dataclass
 class Config:
     """系统配置"""
-    # 搜索关键词（扩展更多关键词获取更多新闻）
+    # 搜索关键词（技术文章类，不是新闻类）
     keywords: List[str] = field(default_factory=lambda: [
-        "安全生产",
-        "施工安全", 
-        "建筑事故",
-        "工程安全",
-        "环境保护",
-        "海外工程"
+        "施工技术方案",
+        "安全技术交底",
+        "环保管理制度",
+        "危大工程方案",
+        "深基坑施工",
+        "高处作业安全",
+        "起重安全管理",
+        "安全隐患排查"
     ])
     
     # 抓取配置
-    max_items_per_keyword: int = 15
-    request_timeout: int = 10
-    request_delay: float = 0.3
+    max_items_per_keyword: int = 10
+    request_timeout: int = 15
+    request_delay: float = 0.5
     
-    # Gemini配置 - 使用最新稳定版本
-    gemini_model: str = "gemini-2.0-flash-001"
+    # Gemini配置
+    gemini_model: str = "gemini-2.0-flash"
     top_n: int = 20
     
     # 输出配置
@@ -104,17 +106,18 @@ class RSSFetcher:
         return response
     
     def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章 - 多数据源策略"""
+        """抓取单个关键词的文章 - 只抓今日头条博主技术文章"""
         encoded_kw = urllib.parse.quote(keyword)
-        all_articles = []
         
-        # 数据源列表：今日头条(博主) + Google News(官方)
+        # RSSHub 镜像列表
         rsshub_mirrors = [
             "https://rsshub.rssforever.com",
             "https://rsshub.app",
+            "https://rsshub.feeded.xyz",
+            "https://hub.slarker.me",
         ]
         
-        # 1. 先抓今日头条（博主内容）
+        # 只抓取今日头条搜索结果（博主文章）
         for mirror in rsshub_mirrors:
             toutiao_url = f"{mirror}/toutiao/search/{encoded_kw}"
             try:
@@ -124,31 +127,14 @@ class RSSFetcher:
                 if feed.entries:
                     articles = self._parse_feed_entries(feed.entries, keyword, '今日头条')
                     if articles:
-                        logger.info(f"✓ [今日头条] 获取 {len(articles)} 条")
-                        all_articles.extend(articles)
-                        break
+                        logger.info(f"✓ [今日头条] 获取 {len(articles)} 条: {keyword}")
+                        return articles[:self.config.max_items_per_keyword]
             except Exception as e:
                 logger.debug(f"[今日头条] {mirror} 失败: {e}")
                 continue
         
-        # 2. 再抓 Google News（官方新闻）
-        google_news_url = f"https://news.google.com/rss/search?q={encoded_kw}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-        try:
-            logger.info(f"📡 [官方新闻] 正在搜索: {keyword}")
-            response = self._fetch_with_retry(google_news_url)
-            feed = feedparser.parse(response.text)
-            if feed.entries:
-                articles = self._parse_feed_entries(feed.entries, keyword, '官方新闻')
-                if articles:
-                    logger.info(f"✓ [官方新闻] 获取 {len(articles)} 条")
-                    all_articles.extend(articles)
-        except Exception as e:
-            logger.warning(f"⚠ [官方新闻] 失败: {e}")
-        
-        if not all_articles:
-            logger.warning(f"✗ 未获取到数据: {keyword}")
-        
-        return all_articles[:self.config.max_items_per_keyword]
+        logger.warning(f"✗ 未获取到数据: {keyword}")
+        return []
     
     def _parse_feed_entries(self, entries: list, keyword: str, source: str = '今日头条') -> List[Dict[str, Any]]:
         """解析RSS条目并进行时效性过滤"""
@@ -237,61 +223,53 @@ class RSSFetcher:
 # ============================================================================
 
 class GeminiFilter:
-    """Gemini智能筛选器 - HSE领域专业版"""
+    """今日头条博主技术文章筛选器"""
     
-    # 系统指令：定义AI的专业身份和价值观
-    SYSTEM_PROMPT = """你是一位拥有20年经验的 HSE（健康、安全、环境）资深管理专家，专门负责建筑工程领域的风险控制与合规审计。
+    SYSTEM_PROMPT = """你是一位建筑工程 HSE 专家。
 
-你的核心能力：
-- 精通《安全生产法》《建设工程安全生产管理条例》等法规体系
-- 熟悉危大工程专项施工方案编制与审核流程
-- 擅长施工现场隐患排查与风险评估
-- 了解ISO 45001、ISO 14001管理体系要求
+你的任务是从今日头条文章中筛选出最有价值的 20 篇博主/工程师写的技术文章。
 
-你的任务是从一组原始资讯中，筛选出最具专业参考价值的 Top 20 内容，为一线HSE管理人员提供高质量的每日阅读清单。"""
+重要：必须排除新闻类内容（事故报道、政策发布等），只保留技术类文章。"""
 
-    # 用户提示词模板
-    USER_PROMPT_TEMPLATE = """以下是从今日头条等平台检索到的原始文章列表（共 {total} 篇，包含标题、链接和发布时间）：
+    USER_PROMPT_TEMPLATE = """以下是从今日头条检索到的文章列表（共 {total} 篇）：
 
 ---
 {articles_text}
 ---
 
-请按照以下标准进行严格筛选：
+请筛选出 {top_n} 篇最有价值的技术文章。
 
-## 筛选标准（按优先级排序）
+## 筛选标准
 
-### 1. 专业相关性 [权重最高]
-- ✅ 优先：施工安全技术规范、危大工程管理、高处作业/起重吊装/深基坑等专项内容
-- ✅ 优先：安全生产法律法规更新、行业标准解读、处罚案例
-- ✅ 优先：环境影响评价、绿色施工、扬尘治理、噪声控制
-- ❌ 剔除：与建筑工程HSE无关的泛安全内容（如交通安全、食品安全）
+### ✅ 优先保留（博主/工程师写的技术文章）：
+- 施工技术方案、施工工艺讲解
+- 安全技术交底、安全操作规程
+- 环保管理制度、绿色施工方法
+- 危大工程方案编制指南
+- 隐患排查清单、检查要点
+- 实操经验分享、案例分析
 
-### 2. 内容深度与价值 [权重次高]
-- ✅ 优先：重大事故深度分析（事故原因、责任认定、整改措施）
-- ✅ 优先：新技术新工艺应用案例（智慧工地、BIM安全管理）
-- ✅ 优先：可操作的检查清单、管理制度模板
-- ❌ 剔除：纯噱头标题党、无实质内容的短资讯
-- ❌ 剔除：软文广告、产品推销类内容
+### ❌ 必须排除（新闻类内容）：
+- 事故报道（如"XX爆炸事故""XX人死亡"）
+- 政策发布、官方通报
+- 广告软文、产品推广
+- 纯转载无原创内容
 
-### 3. 时效性与紧迫性 [加分项]
-- 🔥 置顶：涉及近期重大事故预警或国家级政策更新
-- 🔥 置顶：住建部/应急管理部等官方通报
+## 输出格式
 
-## 输出排序规则
-1. **今日头条博主内容**排在前面（行业观点、实操经验）
-2. **官方新闻**排在后面（政策法规、事故通报）
-
-## 输出格式要求
-
-请严格输出 {top_n} 条精选，按以下Markdown格式：
+请按以下 Markdown 格式输出 {top_n} 条精选：
 
 ### 1. [文章标题](文章链接)
-- **📌 核心看点**：一句话概括
-- **🏷️ 来源**：今日头条/官方新闻
+- **类型**：施工技术/安全管理/环保管理
+- **简介**：一句话概括
 
 ### 2. [下一篇标题](链接)
 ...
+
+## 重要提示
+- 必须输出 {top_n} 条（如果够多）
+- 严禁捏造标题或链接
+- 去重：相似内容只保留一篇"""
 
 ## 重要提示
 - 必须输出满 {top_n} 条（如果原文够多）
