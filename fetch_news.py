@@ -38,19 +38,18 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 @dataclass
 class Config:
     """系统配置"""
-    # 搜索关键词（精简为核心词，提升效率）
+    # 搜索关键词（包含海外工程安全相关）
     keywords: List[str] = field(default_factory=lambda: [
         "安全生产事故",
-        "施工安全", 
-        "建筑工程事故"
+        "施工安全管理", 
+        "海外工程安全",
+        "建筑工程事故",
+        "HSE管理"
     ])
     
-    # 使用 Bing 新闻 RSS（更稳定，不依赖 RSSHub）
-    use_bing_news: bool = True
-    
-    # 抓取配置（优化超时）
+    # 抓取配置
     max_items_per_keyword: int = 10
-    request_timeout: int = 8
+    request_timeout: int = 10
     request_delay: float = 0.5
     
     # Gemini配置 - 使用最新稳定版本
@@ -496,8 +495,16 @@ class ReportGenerator:
         today = datetime.now().strftime('%Y-%m-%d')
         raw_path = self.output_dir / f"raw_data_{today}.json"
         
+        # 转换 datetime 对象为字符串
+        serializable_articles = []
+        for a in articles:
+            article = a.copy()
+            if 'pub_datetime' in article and article['pub_datetime']:
+                article['pub_datetime'] = article['pub_datetime'].isoformat()
+            serializable_articles.append(article)
+        
         with open(raw_path, 'w', encoding='utf-8') as f:
-            json.dump(articles, f, ensure_ascii=False, indent=2)
+            json.dump(serializable_articles, f, ensure_ascii=False, indent=2)
         
         logger.info(f"✓ 原始数据已保存: {raw_path}")
         return raw_path
