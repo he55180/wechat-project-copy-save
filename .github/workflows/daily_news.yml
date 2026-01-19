@@ -42,17 +42,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
 
       # 3. 安装依赖
       - name: 📦 Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
-          # 安装XML处理工具（Bash脚本需要）
-          sudo apt-get update
-          sudo apt-get install -y xmlstarlet
+          pip list  # 打印已安装的包，便于调试
 
       # 4. 运行抓取脚本
       - name: 🔍 Fetch & Filter News
