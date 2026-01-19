@@ -338,14 +338,37 @@ class GeminiFilter:
 4. 相似内容只保留质量最高的一篇
 5. 按专业价值排序，最有价值的排在前面"""
 
-    def __init__(self, api_key: str = None, model: str = "gemini-2.0-flash"):
-        self.api_key = api_key or os.getenv('GEMINI_API_KEY')
-        if not self.api_key:
+    def __init__(self, api_keys: List[str] = None, model: str = "gemini-2.0-flash"):
+        # 支持多 API Key 轮换
+        if api_keys:
+            self.api_keys = api_keys
+        else:
+            # 从环境变量读取多个 Key（GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3...）
+            self.api_keys = []
+            primary_key = os.getenv('GEMINI_API_KEY')
+            if primary_key:
+                self.api_keys.append(primary_key)
+            for i in range(2, 6):  # 支持最多5个Key
+                key = os.getenv(f'GEMINI_API_KEY_{i}')
+                if key:
+                    self.api_keys.append(key)
+        
+        if not self.api_keys:
             raise ValueError("未设置 GEMINI_API_KEY 环境变量")
         
-        self.client = genai.Client(api_key=self.api_key)
+        self.current_key_index = 0
+        self.client = genai.Client(api_key=self.api_keys[0])
         self.model_name = model
-        logger.info(f"✓ Gemini模型已初始化: {model}")
+        logger.info(f"✓ Gemini模型已初始化: {model} (共 {len(self.api_keys)} 个API Key)")
+    
+    def _switch_api_key(self) -> bool:
+        """切换到下一个 API Key"""
+        self.current_key_index += 1
+        if self.current_key_index < len(self.api_keys):
+            self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
+            logger.info(f"🔄 切换到 API Key #{self.current_key_index + 1}")
+            return True
+        return False
     
     def filter_articles(self, articles: List[Dict[str, Any]], top_n: int = 20) -> str:
         """使用Gemini筛选文章"""
@@ -378,6 +401,14 @@ class GeminiFilter:
             return result
             
         except Exception as e:
+            error_str = str(e)
+            # 429 配额超限时尝试切换 Key
+            if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
+                logger.warning(f"⚠ API Key #{self.current_key_index + 1} 配额用尽")
+                if self._switch_api_key():
+                    # 递归重试
+                    return self.filter_articles(articles, top_n)
+            
             logger.error(f"✗ Gemini调用失败: {e}")
             return self._fallback_filter(articles, top_n)
     
