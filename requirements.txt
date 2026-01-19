@@ -1,0 +1,30 @@
+# HSE资讯自动化系统 - Python依赖
+# ==================================
+
+# HTTP请求
+requests>=2.31.0
+
+# Google Gemini AI
+google-generativeai>=0.8.0
+
+# RSS解析（比xml.etree更专业）
+feedparser>=6.0.10
+
+# 数据处理
+pandas>=2.0.0
+
+# 时间处理
+python-dateutil>=2.8.2
+
+# 环境变量管理
+python-dotenv>=1.0.0
+
+# Markdown转HTML（用于邮件格式化）
+markdown>=3.5.0
+
+# 重试机制
+tenacity>=8.2.0
+
+# 邮件发送（本地测试用）
+# 注意：GitHub Actions使用action-send-mail，无需此依赖
+# aiosmtplib>=2.0.0

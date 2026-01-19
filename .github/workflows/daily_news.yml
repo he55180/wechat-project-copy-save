@@ -1,0 +1,182 @@
+# ==============================================================================
+# HSE资讯自动化系统 - GitHub Actions工作流
+# ==============================================================================
+# 功能: 每日自动抓取安环管理资讯，AI筛选后发送邮件
+# 触发: 每天北京时间早上9点 (UTC 01:00)
+# ==============================================================================
+
+name: 📰 HSE Daily News
+
+on:
+  # 定时触发 - 每天 UTC 01:00 = 北京时间 09:00
+  schedule:
+    - cron: '0 1 * * *'
+  
+  # 手动触发（用于测试）
+  workflow_dispatch:
+    inputs:
+      keywords:
+        description: '自定义关键词（空格分隔）'
+        required: false
+        default: ''
+      top_n:
+        description: '筛选Top N篇'
+        required: false
+        default: '20'
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  fetch-and-send:
+    name: 🔄 抓取、筛选、发送
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 检出代码
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. 设置Python环境
+      - name: 🐍 Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      # 3. 安装依赖
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+          # 安装XML处理工具（Bash脚本需要）
+          sudo apt-get update
+          sudo apt-get install -y xmlstarlet
+
+      # 4. 运行抓取脚本
+      - name: 🔍 Fetch & Filter News
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # 处理自定义关键词
+          EXTRA_ARGS=""
+          if [ -n "${{ github.event.inputs.keywords }}" ]; then
+            EXTRA_ARGS="--keywords ${{ github.event.inputs.keywords }}"
+          fi
+          if [ -n "${{ github.event.inputs.top_n }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --top ${{ github.event.inputs.top_n }}"
+          fi
+          
+          python fetch_news.py $EXTRA_ARGS
+
+      # 5. 读取生成的报告
+      - name: 📄 Read Report Content
+        id: report
+        run: |
+          # 读取报告内容
+          if [ -f "output/latest_report.md" ]; then
+            echo "report_exists=true" >> $GITHUB_OUTPUT
+            # 使用delimiter处理多行内容
+            echo "report_content<<EOF" >> $GITHUB_OUTPUT
+            cat output/latest_report.md >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "report_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 6. 发送邮件
+      - name: 📧 Send Email Report
+        if: steps.report.outputs.report_exists == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          # Gmail SMTP配置
+          server_address: smtp.gmail.com
+          server_port: 587
+          secure: true
+          
+          # 认证信息（从Secrets读取）
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          
+          # 邮件内容
+          subject: "📰 [HSE日报] 今日安环管理热文精选 - ${{ github.run_id }}"
+          to: ${{ secrets.MAIL_TO || secrets.MAIL_USERNAME }}
+          from: "HSE资讯机器人 <${{ secrets.MAIL_USERNAME }}>"
+          
+          # 邮件正文（Markdown转HTML）
+          html_body: |
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+                h1 { color: #1a73e8; border-bottom: 2px solid #1a73e8; padding-bottom: 10px; }
+                h2 { color: #34a853; margin-top: 30px; }
+                a { color: #1a73e8; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+                .highlight { background: #fff3cd; padding: 2px 6px; border-radius: 3px; }
+                table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+                th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+                th { background: #f8f9fa; }
+                .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; color: #666; font-size: 12px; }
+              </style>
+            </head>
+            <body>
+              ${{ steps.report.outputs.report_content }}
+              <div class="footer">
+                <p>📬 本邮件由 <strong>HSE资讯自动化系统</strong> 自动发送</p>
+                <p>🔧 GitHub Actions Run ID: ${{ github.run_id }}</p>
+              </div>
+            </body>
+            </html>
+
+      # 7. 上传报告为Artifact（备份）
+      - name: 📤 Upload Report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hse-daily-report-${{ github.run_id }}
+          path: output/
+          retention-days: 30
+
+      # 8. 提交报告到仓库（可选）
+      - name: 💾 Commit Report to Repo
+        if: steps.report.outputs.report_exists == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # 创建reports目录
+          mkdir -p reports/$(date +'%Y/%m')
+          cp output/latest_report.md "reports/$(date +'%Y/%m')/$(date +'%Y-%m-%d').md"
+          
+          git add reports/
+          git diff --staged --quiet || git commit -m "📰 自动归档: $(date +'%Y-%m-%d') HSE日报"
+          git push || echo "No changes to push"
+
+  # 失败通知
+  notify-on-failure:
+    name: ⚠️ 失败通知
+    runs-on: ubuntu-latest
+    needs: fetch-and-send
+    if: failure()
+    
+    steps:
+      - name: 📧 Send Failure Notification
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "⚠️ [HSE系统] 自动化任务失败 - ${{ github.run_id }}"
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: "HSE系统告警 <${{ secrets.MAIL_USERNAME }}>"
+          body: |
+            HSE资讯自动化系统运行失败！
+            
+            运行ID: ${{ github.run_id }}
+            时间: ${{ github.event.head_commit.timestamp }}
+            
+            请检查: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
