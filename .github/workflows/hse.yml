@@ -47,13 +47,14 @@ jobs:
           pip install markdown
           if [ -f "output/latest_report.md" ]; then
             echo "report_exists=true" >> $GITHUB_OUTPUT
-            python << 'ENDPYTHON'
+            python -c "
 import markdown
 with open('output/latest_report.md', 'r', encoding='utf-8') as f:
-    content = f.read()
+  content = f.read()
 html = markdown.markdown(content, extensions=['tables', 'fenced_code'])
-open('output/report.html', 'w', encoding='utf-8').write(html)
-ENDPYTHON
+with open('output/report.html', 'w', encoding='utf-8') as f:
+  f.write(html)
+"
             echo "report_content<<EOF" >> $GITHUB_OUTPUT
             cat output/report.html >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
