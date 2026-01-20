@@ -123,3 +123,4 @@ ENDPYTHON
           to: ${{ secrets.MAIL_USERNAME }}
           from: "HSE Alert <${{ secrets.MAIL_USERNAME }}>"
           body: "Check: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
