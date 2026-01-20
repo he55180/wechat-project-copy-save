@@ -112,12 +112,6 @@ class RSSFetcher:
         encoded_kw = urllib.parse.quote(keyword)
         all_articles = []
         
-        # RSSHub 镜像列表（微信公众号需要）
-        rsshub_mirrors = [
-            "https://rsshub.rssforever.com",
-            "https://rsshub.app",
-        ]
-        
         # 数据源列表
         sources = [
             # Google News
@@ -140,22 +134,9 @@ class RSSFetcher:
             except Exception as e:
                 logger.debug(f"⚠ [{source_name}] 失败: {e}")
         
-        # RSSHub 数据源（仅微信公众号，知乎搜索路由已失效）
-        for mirror in rsshub_mirrors:
-            try:
-                url = f"{mirror}/wechat/sogou/{encoded_kw}"
-                logger.info(f"📡 [微信公众号] 尝试: {mirror}")
-                response = self._fetch_with_retry(url)
-                feed = feedparser.parse(response.text)
-                if feed.entries:
-                    articles = self._parse_feed_entries(feed.entries, keyword, '微信公众号')
-                    if articles:
-                        logger.info(f"✓ [微信公众号] 获取 {len(articles)} 条: {keyword}")
-                        all_articles.extend(articles)
-                        break  # 成功获取后跳过其他镜像
-            except Exception as e:
-                logger.debug(f"⚠ [微信公众号] {mirror} 失败: {e}")
-                continue
+        # NOTE: 微信公众号 RSSHub 抓取已禁用
+        # 原因：搜狗微信反爬虫机制过于严格，公共 RSSHub 镜像经常被封禁
+        # 待后续找到稳定的微信数据源后再恢复
         
         if not all_articles:
             logger.warning(f"✗ 未获取到数据: {keyword}")
