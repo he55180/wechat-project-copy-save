@@ -1,26 +1,16 @@
-# ==============================================================================
-# HSE资讯自动化系统 - GitHub Actions工作流
-# ==============================================================================
-# 功能: 每日自动抓取安环管理资讯，AI筛选后发送邮件
-# 触发: 每天北京时间早上9点 (UTC 01:00)
-# ==============================================================================
-
 name: HSE Daily News
 
 on:
-  # 定时触发 - 每天 UTC 01:00 = 北京时间 09:00
   schedule:
     - cron: '0 1 * * *'
-  
-  # 手动触发（用于测试）
   workflow_dispatch:
     inputs:
       keywords:
-        description: '自定义关键词（空格分隔）'
+        description: 'Custom keywords (space separated)'
         required: false
         default: ''
       top_n:
-        description: '筛选Top N篇'
+        description: 'Top N articles'
         required: false
         default: '20'
 
