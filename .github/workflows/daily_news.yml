@@ -1,4 +1,3 @@
-
 name: HSE Daily News
 
 on:
@@ -7,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       keywords:
-        description: 'Custom keywords (space separated)'
+        description: 'Custom keywords'
         required: false
         default: ''
       top_n:
@@ -36,7 +35,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip list
 
       - name: Fetch and Filter News
         env:
@@ -51,24 +49,23 @@ jobs:
           fi
           python fetch_news.py $EXTRA_ARGS
 
-      - name: Read and Convert Report
+      - name: Convert Report to HTML
         id: report
         run: |
           pip install markdown
           if [ -f "output/latest_report.md" ]; then
             echo "report_exists=true" >> $GITHUB_OUTPUT
-            python -c "
+            python << 'EOF'
 import markdown
 with open('output/latest_report.md', 'r', encoding='utf-8') as f:
     md_content = f.read()
 html_content = markdown.markdown(md_content, extensions=['tables', 'fenced_code'])
 with open('output/report.html', 'w', encoding='utf-8') as f:
     f.write(html_content)
-print('Markdown converted to HTML')
-"
-            echo "report_content<<EOF" >> $GITHUB_OUTPUT
+EOF
+            echo "report_content<<ENDOFREPORT" >> $GITHUB_OUTPUT
             cat output/report.html >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            echo "ENDOFREPORT" >> $GITHUB_OUTPUT
           else
             echo "report_exists=false" >> $GITHUB_OUTPUT
           fi
@@ -82,60 +79,54 @@ print('Markdown converted to HTML')
           secure: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "[HSE Daily] Safety News - ${{ github.run_id }}"
+          subject: "HSE Daily News - ${{ github.run_id }}"
           to: ${{ secrets.MAIL_TO || secrets.MAIL_USERNAME }}
-          from: "HSE News Bot <${{ secrets.MAIL_USERNAME }}>"
+          from: "HSE Bot <${{ secrets.MAIL_USERNAME }}>"
           html_body: |
             <!DOCTYPE html>
             <html>
             <head>
               <style>
-                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
-                h1 { color: #1a73e8; border-bottom: 2px solid #1a73e8; padding-bottom: 10px; }
-                h2 { color: #34a853; margin-top: 30px; }
-                a { color: #1a73e8; text-decoration: none; }
-                a:hover { text-decoration: underline; }
-                table { border-collapse: collapse; width: 100%; margin: 20px 0; }
-                th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-                th { background: #f8f9fa; }
-                .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; color: #666; font-size: 12px; }
+                body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+                h1 { color: #1a73e8; }
+                h2 { color: #34a853; }
+                a { color: #1a73e8; }
+                table { border-collapse: collapse; width: 100%; }
+                th, td { border: 1px solid #ddd; padding: 10px; }
+                th { background: #f5f5f5; }
               </style>
             </head>
             <body>
               ${{ steps.report.outputs.report_content }}
-              <div class="footer">
-                <p>This email was sent automatically by HSE News Automation System</p>
-                <p>GitHub Actions Run ID: ${{ github.run_id }}</p>
-              </div>
+              <hr>
+              <p style="color:#666;font-size:12px;">HSE News Automation - Run ${{ github.run_id }}</p>
             </body>
             </html>
 
-      - name: Upload Report Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hse-daily-report-${{ github.run_id }}
+          name: report-${{ github.run_id }}
           path: output/
           retention-days: 30
 
-      - name: Commit Report to Repo
+      - name: Commit Report
         if: steps.report.outputs.report_exists == 'true'
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
           mkdir -p reports/$(date +'%Y/%m')
           cp output/latest_report.md "reports/$(date +'%Y/%m')/$(date +'%Y-%m-%d').md"
           git add reports/
-          git diff --staged --quiet || git commit -m "Auto archive: $(date +'%Y-%m-%d') HSE Daily Report"
-          git push || echo "No changes to push"
+          git diff --staged --quiet || git commit -m "Archive $(date +'%Y-%m-%d')"
+          git push || true
 
-  notify-on-failure:
-    name: Failure Notification
+  notify-failure:
     runs-on: ubuntu-latest
     needs: fetch-and-send
     if: failure()
-
     steps:
-      - name: Send Failure Notification
+      - name: Send Failure Alert
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -143,12 +134,7 @@ print('Markdown converted to HTML')
           secure: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "[HSE System Alert] Automation Failed - ${{ github.run_id }}"
+          subject: "HSE System Failed - ${{ github.run_id }}"
           to: ${{ secrets.MAIL_USERNAME }}
-          from: "HSE System Alert <${{ secrets.MAIL_USERNAME }}>"
-          body: |
-            HSE News Automation System failed!
-            
-            Run ID: ${{ github.run_id }}
-            
-            Check: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          from: "HSE Alert <${{ secrets.MAIL_USERNAME }}>"
+          body: "Check: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
