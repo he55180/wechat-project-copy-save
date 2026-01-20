@@ -84,6 +84,7 @@ def call_ai_with_failover(prompt: str) -> str:
     1. Tries all available Gemini keys in rotation.
     2. If all Gemini keys fail, it falls back to Groq as a backup.
     """
+    global _current_gemini_key_index
     logger.info("    Attempting to call AI with failover strategy...")
     last_gemini_error = None
 
