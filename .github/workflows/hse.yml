@@ -22,69 +22,75 @@ env:
 
 jobs:
   run:
-    name: Fetch Filter Send
+    name: Fetch, Convert, and Send Report
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed for the archive step
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.11'
 
-      - run: |
+      - name: Install dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Fetch
+      - name: Generate Report using AI
+        id: fetch
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python fetch_news.py
 
-      - name: Convert
-        id: report
+      - name: Prepare Email Content
+        id: email_prep
         run: |
-          pip install markdown
           if [ ! -f "output/latest_report.md" ]; then
+            echo "Report generation failed or produced no output."
             echo "report_exists=false" >> $GITHUB_OUTPUT
-            echo "INFO: latest_report.md not found, skipping conversion and email."
-          else
-            echo "report_exists=true" >> $GITHUB_OUTPUT
-            python .github/workflows/convert_md_to_html.py
+            exit 0
           fi
+          echo "report_exists=true" >> $GITHUB_OUTPUT
+          pip install markdown
+          python .github/workflows/convert_md_to_html.py
+          
+          echo 'EMAIL_BODY<<EOF' >> $GITHUB_ENV
+          cat output/report.html >> $GITHUB_ENV
+          echo 'EOF' >> $GITHUB_ENV
 
       - name: Send Email
-        if: steps.report.outputs.report_exists == 'true'
+        if: steps.email_prep.outputs.report_exists == 'true'
         uses: dawidd6/action-send-mail@v3
+        env:
+          EMAIL_BODY: ${{ env.EMAIL_BODY }}
         with:
           server_address: smtp.gmail.com
           server_port: 465
           secure: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "HSE Daily - ${{ github.run_id }}"
+          subject: "HSE Daily AI Briefing - ${{ github.run_id }}"
           to: ${{ secrets.MAIL_TO || secrets.MAIL_USERNAME }}
-          from: "HSE <${{ secrets.MAIL_USERNAME }}>"
-          body_path: output/report.html
+          from: "HSE AI Assistant <${{ secrets.MAIL_USERNAME }}>"
+          body: ${{ env.EMAIL_BODY }}
           content_type: text/html
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: report-${{ github.run_id }}
-          path: output/
-          retention-days: 30
-
-      - name: Archive
-        if: steps.report.outputs.report_exists == 'true'
+      
+      - name: Archive Report
+        if: steps.email_prep.outputs.report_exists == 'true'
         run: |
           git config user.email "bot@github.com"
           git config user.name "bot"
           mkdir -p reports/$(date +'%Y/%m')
-          cp output/latest_report.md "reports/$(date +'%Y/%m')/$(date +'%Y-%m-%d').md"
+          cp output/latest_report.md "reports/$(date +'%Y/%m')/$(date +'%Y-%m-%d')-run-${{ github.run_id }}.md"
           git add reports/ || true
-          git diff --staged --quiet || git commit -m "Auto: $(date +'%Y-%m-%d')"
+          git diff --staged --quiet || git commit -m "Auto-archive report for run ${{ github.run_id }}"
           git push || true
-
+          
   alert:
     runs-on: ubuntu-latest
     needs: run
@@ -97,9 +103,8 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "HSE Failed - ${{ github.run_id }}"
+          subject: "HSE Workflow FAILED - ${{ github.run_id }}"
           to: ${{ secrets.MAIL_USERNAME }}
-          
           from: "HSE Alert <${{ secrets.MAIL_USERNAME }}>"
-          body: "Check: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          body: "Check run details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 

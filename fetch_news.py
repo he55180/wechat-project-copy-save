@@ -1,695 +1,106 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-HSE资讯自动抓取系统 - Python主脚本
-===================================
-功能：
-1. 从RSSHub抓取今日头条安环管理类文章
-2. 调用Gemini 2.5 Pro进行智能筛选
-3. 生成Markdown报告
-4. 发送邮件通知
-
-版本: V1.0
-作者: HSE自动化团队
-"""
-
 import os
 import sys
-import json
-import time
 import logging
-import argparse
-import urllib.parse
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, field
-
-import requests
-import feedparser
 from google import genai
-from google.genai import types
-from dateutil import parser as date_parser
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from google.generativeai import types
 
-# ============================================================================
-# 配置
-# ============================================================================
-
-@dataclass
-class Config:
-    """系统配置"""
-    # 搜索关键词（用更通用的词获取更多结果）
-    keywords: List[str] = field(default_factory=lambda: [
-        "施工安全",
-        "建筑工程 安全",
-        "危大工程",
-        "高处作业",
-        "起重安全",
-        "脚手架 施工",
-        "深基坑 施工",
-        "安全生产 建筑",
-        "环保施工",
-        "安全隐患"
-    ])
-    
-    # 抓取配置
-    max_items_per_keyword: int = 20
-    request_timeout: int = 20
-    request_delay: float = 0.2
-    
-    # Gemini配置
-    gemini_model: str = "gemini-2.0-flash"
-    top_n: int = 20
-    
-    # 输出配置
-    output_dir: str = "output"
-
-
-# 日志配置
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
-)
+# --- Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
 
+OUTPUT_DIR = "output"
+MODEL_NAME = "gemini-1.5-pro-latest" # Using a powerful model for this complex task
 
-# ============================================================================
-# RSS抓取模块
-# ============================================================================
+# --- The powerful, all-in-one prompt ---
+SYSTEM_PROMPT = """
+You are an expert research analyst for a senior HSE Director in the construction industry.
+Your mission is to find and summarize the most valuable, recent, and in-depth articles on the web.
+"""
 
-class RSSFetcher:
-    """RSS内容抓取器 - 带重试机制和时效性过滤"""
+USER_PROMPT = """
+Please perform a web search to find the 20 most insightful and highest-quality articles published in the last 7 days on the following topics:
+- Advanced construction technology and techniques
+- In-depth case studies of engineering safety incidents
+- Best practices in construction site environmental management
+- Risk analysis of complex construction projects (e.g., deep excavations, high-rise structures)
+
+CRITERIA:
+- **Source Type**: Strongly prefer articles from personal blogs of engineers, industry experts' columns, in-depth forum discussions, and professional journals. AVOID generic news reports, press releases, and product advertisements.
+- **Content Quality**: The articles must provide deep insights, practical advice, lessons learned, or detailed technical analysis.
+
+TASK:
+For each of the top 20 articles you find, format the output *strictly* in Markdown as follows:
+
+---
+
+### [Article Title](Article URL)
+- **Source Type**: (e.g., Engineer's Blog, Professional Journal, Industry Forum)
+- **Key Insights**: A concise bulleted list summarizing the core technical points and takeaways.
+- **Management Application**: How a construction project manager or HSE director can apply these insights.
+
+Very Important:
+- Ensure all links are valid and directly point to the article.
+- The entire output must be a single Markdown text block.
+- Do not include any introductory or concluding text outside of the Markdown report format.
+- Rank the articles with the most valuable and insightful ones first.
+"""
+
+def get_hse_briefing(api_key: str) -> str:
+    """
+    Uses Gemini to perform a web search and generate a complete HSE briefing.
+    """
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is not set.")
     
-    def __init__(self, config: Config):
-        self.config = config
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        })
-        # 时效性阈值：放宽到7天以确保有足够数据
-        self.freshness_threshold = timedelta(days=7)
-    
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(requests.RequestException),
-        before_sleep=lambda retry_state: logger.warning(
-            f"⚠ 请求失败，{retry_state.attempt_number}秒后重试 (第{retry_state.attempt_number}次)..."
-        )
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name=MODEL_NAME,
+        system_instruction=SYSTEM_PROMPT
     )
-    def _fetch_with_retry(self, url: str) -> requests.Response:
-        """带重试机制的HTTP请求"""
-        response = self.session.get(url, timeout=self.config.request_timeout)
-        response.raise_for_status()
-        return response
     
-    def fetch_keyword(self, keyword: str) -> List[Dict[str, Any]]:
-        """抓取单个关键词的文章 - 多数据源获取"""
-        encoded_kw = urllib.parse.quote(keyword)
-        all_articles = []
-        
-        # 数据源列表
-        sources = [
-            # Google News
-            (f"https://news.google.com/rss/search?q={encoded_kw}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans", 'Google'),
-            # Bing News RSS
-            (f"https://www.bing.com/news/search?q={encoded_kw}&format=rss&mkt=zh-CN", 'Bing'),
-        ]
-        
-        # 常规数据源
-        for url, source_name in sources:
-            try:
-                logger.info(f"📡 [{source_name}] 搜索: {keyword}")
-                response = self._fetch_with_retry(url)
-                feed = feedparser.parse(response.text)
-                if feed.entries:
-                    articles = self._parse_feed_entries(feed.entries, keyword, source_name)
-                    if articles:
-                        logger.info(f"✓ [{source_name}] 获取 {len(articles)} 条: {keyword}")
-                        all_articles.extend(articles)
-            except Exception as e:
-                logger.debug(f"⚠ [{source_name}] 失败: {e}")
-        
-        # NOTE: 微信公众号 RSSHub 抓取已禁用
-        # 原因：搜狗微信反爬虫机制过于严格，公共 RSSHub 镜像经常被封禁
-        # 待后续找到稳定的微信数据源后再恢复
-        
-        if not all_articles:
-            logger.warning(f"✗ 未获取到数据: {keyword}")
-        
-        return all_articles[:self.config.max_items_per_keyword]
-    
-    def _parse_feed_entries(self, entries: list, keyword: str, source: str = '今日头条') -> List[Dict[str, Any]]:
-        """解析RSS条目并进行时效性过滤"""
-        now = datetime.now(timezone.utc)
-        items = []
-        
-        for entry in entries:
-            title = entry.get('title', '')
-            link = entry.get('link', '')
-            description = entry.get('summary', entry.get('description', ''))[:200]
-            pub_date_str = entry.get('published', entry.get('updated', ''))
-            
-            if not title or not link:
-                continue
-            
-            # 解析发布时间并计算时效性
-            pub_date = None
-            freshness = None
-            is_fresh = True  # 默认保留（如果无法解析时间）
-            
-            if pub_date_str:
-                try:
-                    pub_date = date_parser.parse(pub_date_str)
-                    # 确保时区感知
-                    if pub_date.tzinfo is None:
-                        pub_date = pub_date.replace(tzinfo=timezone.utc)
-                    
-                    age = now - pub_date
-                    is_fresh = age <= self.freshness_threshold
-                    
-                    # 生成可读的时效标签
-                    if age < timedelta(hours=1):
-                        freshness = "刚刚"
-                    elif age < timedelta(hours=6):
-                        freshness = f"{int(age.total_seconds() / 3600)}小时前"
-                    elif age < timedelta(hours=24):
-                        freshness = "今日"
-                    else:
-                        freshness = f"{age.days}天前"
-                        
-                except (ValueError, TypeError):
-                    pub_date_str = "未知时间"
-            
-            # 不做时效性过滤，保留所有文章（让AI筛选质量）
-            items.append({
-                'title': title,
-                'link': link,
-                'description': description,
-                'pub_date': pub_date_str,
-                'pub_datetime': pub_date,
-                'freshness': freshness,
-                'keyword': keyword,
-                'source': source
-            })
-        
-        # 按发布时间排序（最新在前）
-        items.sort(key=lambda x: x.get('pub_datetime') or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-        
-        return items
-    
-    def fetch_all(self) -> List[Dict[str, Any]]:
-        """抓取所有关键词并去重"""
-        all_articles = []
-        seen_titles = set()
-        seen_links = set()
-        
-        for i, keyword in enumerate(self.config.keywords, 1):
-            logger.info(f"\n{'='*50}")
-            logger.info(f"[{i}/{len(self.config.keywords)}] 正在检索: {keyword}")
-            logger.info('='*50)
-            
-            articles = self.fetch_keyword(keyword)
-            
-            # 去重：基于标题和链接
-            for article in articles:
-                title = article.get('title', '')
-                link = article.get('link', '')
-                
-                # 标题相似度去重（取前20个字符）
-                title_key = title[:20] if title else ''
-                
-                if title_key not in seen_titles and link not in seen_links:
-                    seen_titles.add(title_key)
-                    seen_links.add(link)
-                    all_articles.append(article)
-            
-            # 礼貌延迟
-            if i < len(self.config.keywords):
-                time.sleep(self.config.request_delay)
-        
-        logger.info(f"\n📊 总计抓取: {len(all_articles)} 篇去重后文章")
-        return all_articles
-
-
-# ============================================================================
-# Gemini AI筛选模块
-# ============================================================================
-
-class GeminiFilter:
-    """HSE总监级专业筛选器"""
-    
-    SYSTEM_PROMPT = """你现在的身份是国家注册安全工程师和资深 HSE 总监，拥有 20 年建筑工程安全管理经验。
-
-你的职责是从原始信息中筛选出对一线 HSE 管理人员最有价值的专业内容。
-
-你的专业背景：
-- 精通《安全生产法》《建设工程安全生产管理条例》等法规
-- 熟悉危大工程专项施工方案编制与论证流程
-- 擅长施工现场隐患识别与风险评估
-- 了解 ISO 45001、ISO 14001 管理体系要求"""
-
-    USER_PROMPT_TEMPLATE = """以下是从今日头条检索到的原始文章列表（共 {total} 篇）：
-
----
-{articles_text}
----
-
-请以 HSE 总监的专业视角，执行以下任务：
-
-## 一、严苛筛选
-
-❌ 必须剔除：
-- 社会八卦、娱乐新闻
-- 与安环管理无关的普通商业新闻
-- 纯事故报道（只报死伤人数，无分析价值）
-- 广告软文、产品推销
-- 标题党、无实质内容
-
-✅ 优先保留：
-- 博主/工程师写的技术文章
-- 有深度分析的事故案例
-- 可操作的管理制度、检查清单
-- 施工工艺、安全技术交底
-
-## 二、专业分类
-
-将筛选后的文章分为以下类别：
-1. 【施工技术分享】- 施工工艺、技术方案
-2. 【安全环境管理】- 管理制度、检查要点
-3. 【事故案例分析】- 有分析价值的事故复盘
-4. 【危大工程】- 深基坑、高支模等专项
-5. 【起重吊装】- 塔吊、汽车吊等
-6. 【脚手架/模板支架】- 架体搭设、验收
-7. 【其他安全】- 其他有价值内容
-
-## 三、输出格式
-
-请输出 {top_n} 条精选，按专业价值排序，格式如下：
-
----
-
-### 【施工技术分享】
-
-#### 1. [文章标题](文章链接)
-- **核心要点**：该文章的主要技术内容
-- **管理建议**：作为 HSE 负责人，可借鉴的管理措施
-
----
-
-### 【安全环境管理】
-
-#### 2. [文章标题](文章链接)
-- **核心要点**：...
-- **管理建议**：...
-
----
-
-（按类别继续输出...）
-
-## 四、重要提示
-
-1. 必须输出 {top_n} 条（如果原文够多）
-2. 严禁捏造标题或链接
-3. 每条必须包含"核心要点"和"管理建议"
-4. 相似内容只保留质量最高的一篇
-5. 按专业价值排序，最有价值的排在前面"""
-
-    def __init__(self, api_keys: List[str] = None, model: str = "gemini-2.0-flash"):
-        # 支持多 API Key 轮换
-        if api_keys:
-            self.api_keys = api_keys
-        else:
-            # 从环境变量读取多个 Key（GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3...）
-            self.api_keys = []
-            primary_key = os.getenv('GEMINI_API_KEY')
-            if primary_key:
-                self.api_keys.append(primary_key)
-            for i in range(2, 6):  # 支持最多5个Key
-                key = os.getenv(f'GEMINI_API_KEY_{i}')
-                if key:
-                    self.api_keys.append(key)
-        
-        if not self.api_keys:
-            raise ValueError("未设置 GEMINI_API_KEY 环境变量")
-        
-        self.current_key_index = 0
-        self.client = genai.Client(api_key=self.api_keys[0])
-        self.model_name = model
-        logger.info(f"✓ Gemini模型已初始化: {model} (共 {len(self.api_keys)} 个API Key)")
-    
-    def _switch_api_key(self) -> bool:
-        """切换到下一个 API Key"""
-        self.current_key_index += 1
-        if self.current_key_index < len(self.api_keys):
-            self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
-            logger.info(f"🔄 切换到 API Key #{self.current_key_index + 1}")
-            return True
-        return False
-    
-    def filter_articles(self, articles: List[Dict[str, Any]], top_n: int = 20) -> str:
-        """使用Gemini筛选文章"""
-        if not articles:
-            return "暂无文章数据"
-        
-        # 构建输入文本
-        articles_text = self._format_articles_for_prompt(articles)
-        
-        # 使用专业化Prompt模板
-        user_prompt = self.USER_PROMPT_TEMPLATE.format(
-            total=len(articles),
-            articles_text=articles_text,
-            top_n=top_n
-        )
-
-        try:
-            logger.info(f"🤖 正在调用Gemini进行智能筛选...")
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[self.SYSTEM_PROMPT + "\n\n" + user_prompt],
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=8192
-                )
-            )
-            
-            result = response.text
-            logger.info(f"✓ Gemini筛选完成")
-            return result
-            
-        except Exception as e:
-            error_str = str(e)
-            # 429 配额超限时尝试切换 Key
-            if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
-                logger.warning(f"⚠ API Key #{self.current_key_index + 1} 配额用尽")
-                if self._switch_api_key():
-                    # 递归重试
-                    return self.filter_articles(articles, top_n)
-            
-            logger.error(f"✗ Gemini调用失败: {e}")
-            return self._fallback_filter(articles, top_n)
-    
-    def _format_articles_for_prompt(self, articles: List[Dict[str, Any]]) -> str:
-        """格式化文章列表供Gemini处理"""
-        lines = []
-        for i, article in enumerate(articles, 1):
-            pub_date = article.get('pub_date', '未知时间')
-            freshness = article.get('freshness', '')
-            freshness_tag = f" [{freshness}]" if freshness else ""
-            
-            line = f"{i}. 【{article['keyword']}】{article['title']}{freshness_tag}\n   链接: {article['link']}\n   发布: {pub_date}"
-            if article.get('description'):
-                line += f"\n   摘要: {article['description'][:150]}..."
-            lines.append(line)
-        return "\n\n".join(lines)
-    
-    def _fallback_filter(self, articles: List[Dict[str, Any]], top_n: int) -> str:
-        """Gemini不可用时的降级方案 - 基于规则的简单筛选"""
-        logger.warning("⚠ 使用降级方案：基于规则的关键词权重筛选")
-        
-        # 高价值关键词权重
-        high_value_keywords = {
-            '事故': 10, '伤亡': 10, '死亡': 10,
-            '住建部': 8, '应急管理部': 8, '通报': 8,
-            '法规': 7, '条例': 7, '标准': 7, '规范': 7,
-            '处罚': 6, '罚款': 6, '责任': 6,
-            '危大工程': 5, '深基坑': 5, '高处作业': 5, '起重': 5,
-            '专项方案': 4, '隐患排查': 4, '风险评估': 4,
-            '智慧工地': 3, 'BIM': 3, '新技术': 3,
-        }
-        
-        # 低价值关键词（降权）
-        low_value_keywords = ['广告', '推广', '优惠', '免费', '加盟']
-        
-        def score_article(article):
-            title = article.get('title', '')
-            desc = article.get('description', '')
-            text = title + desc
-            
-            score = 0
-            for kw, weight in high_value_keywords.items():
-                if kw in text:
-                    score += weight
-            
-            for kw in low_value_keywords:
-                if kw in text:
-                    score -= 5
-            
-            # 时效性加分
-            freshness = article.get('freshness', '')
-            if freshness in ['刚刚', '今日']:
-                score += 3
-            elif '小时前' in freshness:
-                score += 2
-            
-            return score
-        
-        # 评分并排序
-        scored_articles = [(a, score_article(a)) for a in articles]
-        scored_articles.sort(key=lambda x: x[1], reverse=True)
-        
-        # 格式化输出
-        lines = ["## ⚠️ 降级模式输出（AI服务不可用）\n"]
-        for i, (article, score) in enumerate(scored_articles[:top_n], 1):
-            freshness_tag = f" [{article.get('freshness', '')}]" if article.get('freshness') else ""
-            lines.append(f"### {i}. [{article['title']}]({article['link']}){freshness_tag}")
-            lines.append(f"- **📌 核心看点**：{article.get('description', '待阅读')[:80]}...")
-            lines.append(f"- **💡 推荐理由**：关键词匹配评分 {score} 分")
-            lines.append(f"- **🏷️ 标签**：#{article['keyword']}")
-            lines.append("")
-        
-        return "\n".join(lines)
-
-
-# ============================================================================
-# 报告生成模块
-# ============================================================================
-
-class ReportGenerator:
-    """Markdown报告生成器"""
-    
-    def __init__(self, output_dir: str = "output"):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    def generate(self, 
-                 filtered_content: str, 
-                 raw_articles: List[Dict[str, Any]],
-                 config: Config) -> Path:
-        """生成完整报告"""
-        
-        today = datetime.now().strftime('%Y-%m-%d')
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        weekday = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][datetime.now().weekday()]
-        
-        # 统计时效性分布
-        freshness_stats = {}
-        for a in raw_articles:
-            f = a.get('freshness', '未知')
-            freshness_stats[f] = freshness_stats.get(f, 0) + 1
-        
-        report = f"""# 📰 HSE资讯每日精选
-
-> 🗓️ **{today} {weekday}** | ⏰ 生成于 {timestamp}  
-> 📡 数据源：今日头条 (via RSSHub) | 🤖 AI筛选：Gemini 2.5 Pro
-
----
-
-## 🏆 今日 Top 20 精选
-
-{filtered_content}
-
----
-
-## 📊 数据分析
-
-### 抓取统计
-
-| 指标 | 数值 |
-|------|------|
-| 检索关键词 | {len(config.keywords)} 个 |
-| 原始文章数 | {len(raw_articles)} 篇 |
-| 精选文章数 | 20 篇 |
-| 时效范围 | 过去24小时 |
-
-### 关键词热度分布
-
-"""
-        # 统计关键词分布
-        from collections import Counter
-        keyword_counts = Counter(a['keyword'] for a in raw_articles)
-        for kw, count in keyword_counts.most_common():
-            bar = '█' * min(count, 20)
-            report += f"| {kw} | {bar} {count}篇 |\n"
-        
-        report += f"""
-### 时效性分布
-
-"""
-        for freshness, count in sorted(freshness_stats.items(), key=lambda x: -x[1]):
-            report += f"- **{freshness}**: {count} 篇\n"
-        
-        report += f"""
----
-
-## 📌 关于本报告
-
-本报告由 **HSE资讯自动化系统** 自动生成，工作流程：
-
-```
-🔍 RSSHub抓取 → ⏱️ 24h时效过滤 → 🤖 Gemini智能筛选 → 📧 邮件推送
-```
-
-### 筛选标准
-
-1. **专业相关性**：优先施工安全、危大工程、环境保护等核心领域
-2. **内容价值**：优先深度分析、法规解读、事故教训
-3. **时效紧迫性**：重大事故预警、政策更新置顶
-
-### 订阅与反馈
-
-- 📧 如需调整关键词，请修改 `fetch_news.py` 中的 `Config.keywords`
-- 🔧 如需调整推送时间，请修改 `.github/workflows/daily_news.yml`
-
----
-
-*🛡️ Powered by HSE News Automation System v1.1*  
-*📅 {today} | Made with ❤️ for HSE Professionals*
-"""
-        
-        # 保存报告
-        report_path = self.output_dir / f"daily_report_{today}.md"
-        report_path.write_text(report, encoding='utf-8')
-        logger.info(f"✓ 报告已保存: {report_path}")
-        
-        # 同时保存一个latest.md方便引用
-        latest_path = self.output_dir / "latest_report.md"
-        latest_path.write_text(report, encoding='utf-8')
-        
-        return report_path
-    
-    def save_raw_data(self, articles: List[Dict[str, Any]]) -> Path:
-        """保存原始数据为JSON"""
-        today = datetime.now().strftime('%Y-%m-%d')
-        raw_path = self.output_dir / f"raw_data_{today}.json"
-        
-        # 转换 datetime 对象为字符串
-        serializable_articles = []
-        for a in articles:
-            article = a.copy()
-            if 'pub_datetime' in article and article['pub_datetime']:
-                article['pub_datetime'] = article['pub_datetime'].isoformat()
-            serializable_articles.append(article)
-        
-        with open(raw_path, 'w', encoding='utf-8') as f:
-            json.dump(serializable_articles, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"✓ 原始数据已保存: {raw_path}")
-        return raw_path
-
-
-# ============================================================================
-# 主程序
-# ============================================================================
-
-def parse_args():
-    """解析命令行参数"""
-    parser = argparse.ArgumentParser(
-        description='HSE资讯自动抓取系统',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-  python fetch_news.py                    # 完整运行
-  python fetch_news.py --fetch-only       # 仅抓取，不调用AI
-  python fetch_news.py --keywords 安全生产 工程事故
-        """
-    )
-    parser.add_argument('--fetch-only', action='store_true',
-                        help='仅抓取数据，不调用Gemini筛选')
-    parser.add_argument('--keywords', nargs='+',
-                        help='自定义搜索关键词')
-    parser.add_argument('--top', type=int, default=20,
-                        help='筛选Top N篇文章 (默认20)')
-    parser.add_argument('--output', type=str, default='output',
-                        help='输出目录')
-    parser.add_argument('-q', '--quiet', action='store_true',
-                        help='静默模式')
-    return parser.parse_args()
-
-
-def main():
-    """主函数"""
-    args = parse_args()
-    
-    if args.quiet:
-        logging.getLogger().setLevel(logging.WARNING)
-    
-    print("""
-╔═══════════════════════════════════════════════════════════╗
-║         🛡️  HSE资讯自动化抓取系统 v1.0                    ║
-║         每日安环管理热文智能精选                          ║
-╚═══════════════════════════════════════════════════════════╝
-    """)
-    
-    # 初始化配置
-    config = Config()
-    if args.keywords:
-        config.keywords = args.keywords
-    config.top_n = args.top
-    config.output_dir = args.output
+    logger.info(f"🤖 Calling Gemini 1.5 Pro to search and generate the report...")
     
     try:
-        # 1. 抓取数据
-        logger.info("📡 第一阶段：数据抓取")
-        fetcher = RSSFetcher(config)
-        articles = fetcher.fetch_all()
-        
-        if not articles:
-            logger.error("❌ 未抓取到任何文章，请检查网络或数据源")
-            return 1
-        
-        # 保存原始数据
-        reporter = ReportGenerator(config.output_dir)
-        reporter.save_raw_data(articles)
-        
-        # 2. AI筛选
-        if not args.fetch_only:
-            logger.info("\n🤖 第二阶段：AI智能筛选")
-            
-            api_key = os.getenv('GEMINI_API_KEY')
-            if not api_key:
-                logger.warning("⚠ 未设置GEMINI_API_KEY，跳过AI筛选")
-                filtered_content = "（AI筛选未启用，请设置GEMINI_API_KEY环境变量）"
-            else:
-                gemini = GeminiFilter(api_key, config.gemini_model)
-                filtered_content = gemini.filter_articles(articles, config.top_n)
-        else:
-            filtered_content = "（仅抓取模式，未进行AI筛选）"
-        
-        # 3. 生成报告
-        logger.info("\n📝 第三阶段：生成报告")
-        report_path = reporter.generate(filtered_content, articles, config)
-        
-        # 4. 完成
-        print(f"""
-╔═══════════════════════════════════════════════════════════╗
-║  ✅ 处理完成！                                             ║
-╠═══════════════════════════════════════════════════════════╣
-║  📊 抓取文章: {len(articles):>4} 篇                                    ║
-║  📄 报告路径: {str(report_path):<40} ║
-╚═══════════════════════════════════════════════════════════╝
-        """)
-        
-        return 0
-        
+        response = model.generate_content(
+            USER_PROMPT,
+            generation_config=types.GenerationConfig(
+                temperature=0.5,
+                max_output_tokens=8192
+            )
+        )
+        logger.info("✅ Gemini task completed successfully.")
+        return response.text
     except Exception as e:
-        logger.error(f"❌ 系统错误: {e}", exc_info=True)
-        return 1
+        logger.error(f"❌ An error occurred during the Gemini API call: {e}")
+        return f"# ⚠️ AI Briefing Generation Failed\n\nAn error occurred while contacting the Gemini API:\n\n```\n{e}\n```"
 
+def main():
+    """
+    Main function to generate and save the HSE report.
+    """
+    logger.info("🚀 Starting HSE News Automation v2.0")
+    
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        logger.error("❌ Critical: GEMINI_API_KEY environment variable is not set. Aborting.")
+        sys.exit(1)
+        
+    report_content = get_hse_briefing(api_key)
+    
+    output_path = Path(OUTPUT_DIR)
+    output_path.mkdir(exist_ok=True)
+    report_file = output_path / "latest_report.md"
+    
+    try:
+        report_file.write_text(report_content, encoding='utf-8')
+        logger.info(f"✅ Report successfully saved to {report_file}")
+    except Exception as e:
+        logger.error(f"❌ Failed to write report to file: {e}")
+        sys.exit(1)
+        
+    logger.info("🎉 Process completed.")
+    sys.exit(0)
 
 if __name__ == '__main__':
-    sys.exit(main())
+    main()
