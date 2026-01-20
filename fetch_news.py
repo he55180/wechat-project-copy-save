@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from google import genai
+import google.generativeai as genai
 from google.generativeai import types
 
 # --- Configuration ---
