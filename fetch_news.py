@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 # --- Constants ---
 OUTPUT_DIR = "output"
-STABLE_GEMINI_MODEL = "gemini-1.5-flash"
-GROQ_MODEL = "llama3-70b-8192"
+STABLE_GEMINI_MODEL = "gemini-1.5-flash-latest"
+GROQ_MODEL = "llama3-8b-8192"
 
 # --- API Key Management ---
 def load_gemini_keys() -> List[str]:
@@ -50,7 +50,7 @@ _current_gemini_key_index = 0
 
 def get_next_gemini_key() -> str:
     """Rotate to the next available Gemini API key."""
-    global _current_gemini_key_index
+    global _current_gemini_gemini_key_index
     if not GEMINI_API_KEYS:
         return ''
     key = GEMINI_API_KEYS[_current_gemini_key_index]
