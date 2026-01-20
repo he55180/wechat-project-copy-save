@@ -1,5 +1,11 @@
 # Main library for Google Gemini AI
 google-generativeai
 
+# For RSS fetching and retries
+requests
+feedparser
+python-dateutil
+tenacity
+
 # Used for loading .env file for local development
 python-dotenv
