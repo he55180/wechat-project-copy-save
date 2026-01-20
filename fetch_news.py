@@ -83,13 +83,23 @@ def get_next_api_key() -> str:
     return key
 
 def call_gemini_with_rotation(prompt: str, max_retries: int = None) -> str:
-    """Call Gemini API with automatic key rotation, fallback to Groq when all exhausted"""
+    """Call AI API - prioritize Groq if available, fallback to Gemini"""
+    
+    # PRIORITY: Use Groq first if available (more reliable)
+    if GROQ_API_KEY:
+        logger.info("    Using Groq API (primary)...")
+        try:
+            return call_groq(prompt)
+        except Exception as groq_error:
+            logger.warning(f"    Groq failed: {groq_error}, trying Gemini...")
+    
+    # Fallback to Gemini
     if max_retries is None:
         max_retries = len(API_KEYS) * 2 if API_KEYS else 0
     
     last_error = None
     
-    # Try all Gemini keys first
+    # Try all Gemini keys
     for attempt in range(max_retries):
         api_key = get_next_api_key()
         if not api_key:
