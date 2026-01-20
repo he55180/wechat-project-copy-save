@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = "output"
-MODEL_NAME = "gemini-1.5-pro-latest" # Using a powerful model for this complex task
+MODEL_NAME = "gemini-pro" # Using a powerful and stable model
 
 # --- The powerful, all-in-one prompt ---
 SYSTEM_PROMPT = """

@@ -47,7 +47,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python fetch_news.py
 
-      - name: Prepare Email Content
+      - name: Convert Markdown to HTML for Email
         id: email_prep
         run: |
           if [ ! -f "output/latest_report.md" ]; then
@@ -57,17 +57,13 @@ jobs:
           fi
           echo "report_exists=true" >> $GITHUB_OUTPUT
           pip install markdown
+          # This script now only converts, it doesn't set outputs
           python .github/workflows/convert_md_to_html.py
-          
-          echo 'EMAIL_BODY<<EOF' >> $GITHUB_ENV
-          cat output/report.html >> $GITHUB_ENV
-          echo 'EOF' >> $GITHUB_ENV
 
       - name: Send Email
         if: steps.email_prep.outputs.report_exists == 'true'
-        uses: dawidd6/action-send-mail@v3
-        env:
-          EMAIL_BODY: ${{ env.EMAIL_BODY }}
+        # Pinning to a specific version that is known to support body_path
+        uses: dawidd6/action-send-mail@v3.8.0
         with:
           server_address: smtp.gmail.com
           server_port: 465
@@ -77,7 +73,8 @@ jobs:
           subject: "HSE Daily AI Briefing - ${{ github.run_id }}"
           to: ${{ secrets.MAIL_TO || secrets.MAIL_USERNAME }}
           from: "HSE AI Assistant <${{ secrets.MAIL_USERNAME }}>"
-          body: ${{ env.EMAIL_BODY }}
+          # Use body_path, which is more robust for file content
+          body_path: output/report.html
           content_type: text/html
       
       - name: Archive Report
@@ -96,7 +93,7 @@ jobs:
     needs: run
     if: failure()
     steps:
-      - uses: dawidd6/action-send-mail@v3
+      - uses: dawidd6/action-send-mail@v3.8.0
         with:
           server_address: smtp.gmail.com
           server_port: 465
