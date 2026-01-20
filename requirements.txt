@@ -1,5 +1,5 @@
 # Main library for Google Gemini AI
-google-generativeai
+google-genai
 
 # For RSS fetching and retries
 requests
