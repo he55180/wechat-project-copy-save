@@ -9,3 +9,6 @@ tenacity
 
 # Used for loading .env file for local development
 python-dotenv
+
+# For converting email content from Markdown to HTML
+markdown
