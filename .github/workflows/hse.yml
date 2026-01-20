@@ -48,15 +48,10 @@ jobs:
           if [ ! -f "output/latest_report.md" ]; then
             echo "report_exists=false" >> $GITHUB_OUTPUT
             echo "INFO: latest_report.md not found, skipping conversion and email."
-            exit 0
+          else
+            echo "report_exists=true" >> $GITHUB_OUTPUT
+            python .github/workflows/convert_md_to_html.py
           fi
-          
-          echo "report_exists=true" >> $GITHUB_OUTPUT
-          python .github/workflows/convert_md_to_html.py
-          
-          echo "report_content<<THIS_IS_A_UNIQUE_DELIMITER" >> $GITHUB_OUTPUT
-          cat output/report.html >> $GITHUB_OUTPUT
-          echo "THIS_IS_A_UNIQUE_DELIMITER" >> $GITHUB_OUTPUT
 
       - name: Send Email
         if: steps.report.outputs.report_exists == 'true'
@@ -70,25 +65,8 @@ jobs:
           subject: "HSE Daily - ${{ github.run_id }}"
           to: ${{ secrets.MAIL_TO || secrets.MAIL_USERNAME }}
           from: "HSE <${{ secrets.MAIL_USERNAME }}>"
-          html_body: |
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <style>
-                body { font-family: Arial; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
-                h1, h2 { color: #1a73e8; }
-                a { color: #1a73e8; }
-                table { border-collapse: collapse; width: 100%; }
-                th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-                th { background: #f5f5f5; }
-              </style>
-            </head>
-            <body>
-              ${{ steps.report.outputs.report_content }}
-              <hr>
-              <p style="font-size:12px;color:#666;">Run: ${{ github.run_id }}</p>
-            </body>
-            </html>
+          body_path: output/report.html
+          content_type: text/html
 
       - uses: actions/upload-artifact@v4
         with:
