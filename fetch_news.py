@@ -85,9 +85,11 @@ def get_next_api_key() -> str:
 def call_gemini_with_rotation(prompt: str, max_retries: int = None) -> str:
     """Call Gemini API with automatic key rotation, fallback to Groq when all exhausted"""
     if max_retries is None:
-        max_retries = len(API_KEYS) * 2  # Try each key twice
+        max_retries = len(API_KEYS) * 2 if API_KEYS else 0
     
     last_error = None
+    
+    # Try all Gemini keys first
     for attempt in range(max_retries):
         api_key = get_next_api_key()
         if not api_key:
@@ -101,23 +103,30 @@ def call_gemini_with_rotation(prompt: str, max_retries: int = None) -> str:
         except Exception as e:
             last_error = e
             error_str = str(e).lower()
+            # Continue to next key for any error (quota, invalid key, etc.)
             if '429' in str(e) or 'quota' in error_str or 'rate' in error_str:
                 logger.warning(f"    Key {API_KEYS.index(api_key)+1}/{len(API_KEYS)} quota exceeded, rotating...")
-                time.sleep(1)  # Brief pause before trying next key
-                continue
+            elif '400' in str(e) or 'invalid' in error_str:
+                logger.warning(f"    Key {API_KEYS.index(api_key)+1}/{len(API_KEYS)} invalid, rotating...")
             else:
-                raise  # Non-quota errors should be raised immediately
+                logger.warning(f"    Key {API_KEYS.index(api_key)+1}/{len(API_KEYS)} error: {e}, rotating...")
+            time.sleep(1)
+            continue
     
-    # All Gemini keys exhausted, try Groq as fallback
+    # All Gemini keys exhausted or failed, try Groq as fallback
     if GROQ_API_KEY:
-        logger.info("    All Gemini keys exhausted, falling back to Groq...")
+        logger.info("    All Gemini keys failed, falling back to Groq...")
         try:
             return call_groq(prompt)
         except Exception as groq_error:
             logger.error(f"    Groq also failed: {groq_error}")
+            if last_error:
+                raise last_error
             raise groq_error
     
-    raise last_error  # All options exhausted
+    if last_error:
+        raise last_error
+    raise ValueError("No API keys available (neither Gemini nor Groq)")
 
 # Legacy single key support (for backward compatibility)
 API_KEY = API_KEYS[0] if API_KEYS else os.getenv('GEMINI_API_KEY')
