@@ -45,22 +45,18 @@ jobs:
         id: report
         run: |
           pip install markdown
-          if [ -f "output/latest_report.md" ]; then
-            echo "report_exists=true" >> $GITHUB_OUTPUT
-            python -c "
-import markdown
-with open('output/latest_report.md', 'r', encoding='utf-8') as f:
-  content = f.read()
-html = markdown.markdown(content, extensions=['tables', 'fenced_code'])
-with open('output/report.html', 'w', encoding='utf-8') as f:
-  f.write(html)
-"
-            echo "report_content<<EOF" >> $GITHUB_OUTPUT
-            cat output/report.html >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
+          if [ ! -f "output/latest_report.md" ]; then
             echo "report_exists=false" >> $GITHUB_OUTPUT
+            echo "INFO: latest_report.md not found, skipping conversion and email."
+            exit 0
           fi
+          
+          echo "report_exists=true" >> $GITHUB_OUTPUT
+          python .github/workflows/convert_md_to_html.py
+          
+          echo "report_content<<EOF" >> $GITHUB_OUTPUT
+          cat output/report.html >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Send Email
         if: steps.report.outputs.report_exists == 'true'
