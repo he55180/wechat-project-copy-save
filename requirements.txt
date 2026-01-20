@@ -1,14 +1,5 @@
-# HSE资讯自动化系统 - Python依赖（精简版）
-# ==================================
+# Main library for Google Gemini AI
+google-generativeai
 
-# 核心依赖
-requests>=2.31.0
-google-genai>=1.0.0
-python-dotenv>=1.0.0
-
-# RSS解析
-feedparser>=6.0.10
-python-dateutil>=2.8.2
-
-# 重试机制
-tenacity>=8.2.0
+# Used for loading .env file for local development
+python-dotenv
