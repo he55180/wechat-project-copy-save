@@ -1,6 +1,6 @@
-# Wechat Project Copy-Save 工具箱
+# Wechat Project Copy-Save
 
-包含多种自动化脚本，目前主要使用 **Wechat Project Copy-Save**。
+> 微信公众号文章一键抓取 · 自动排版 · 归档系统
 
 ## 🔥 核心工具: Wechat Project Copy-Save (一键文章归档)·Word版)
 
