@@ -38,3 +38,9 @@ Thumbs.db
 # 日志
 *.log
 logs/
+
+# 排版管线临时文件
+*_escaped.md
+*_temp.docx
+output/
+!output/latest_report.md

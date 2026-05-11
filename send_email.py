@@ -252,7 +252,7 @@ class EmailSender:
         return self.send_markdown_report(to_email, subject, content)
 
 
-def main():
+def main(argv=None):
     """命令行入口"""
     import argparse
     
@@ -263,7 +263,7 @@ def main():
                         help='收件人邮箱（默认使用MAIL_TO或MAIL_USERNAME）')
     parser.add_argument('-s', '--subject', help='邮件主题')
     
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     
     to_email = args.to_email or os.getenv('MAIL_TO') or os.getenv('MAIL_USERNAME')
     

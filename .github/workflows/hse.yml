@@ -23,10 +23,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install system dependencies (Pandoc + Chrome + Chinese fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc fonts-wqy-zenhei fonts-noto-cjk google-chrome-stable
+          sudo fc-cache -fv
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-generativeai requests feedparser python-dateutil tenacity python-dotenv
+          pip install google-generativeai requests feedparser python-dateutil tenacity python-dotenv lxml python-docx
 
       - name: Generate Report
         id: generate
